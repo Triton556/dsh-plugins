@@ -42,3 +42,13 @@
 4. Убедиться, что push прошёл, и дать ссылку.
 5. Дальше — коммиты после каждой значимой правки плагинов (`dsh-computer-use`, `artifact-panes`),
    с осмысленными сообщениями; обновление репозитория — по ходу работы.
+## Статус: ВЫПОЛНЕНО 2026-11-11
+
+Репозиторий создан и запушен: **https://github.com/Triton556/dsh-plugins** (public).
+
+- имя: `dsh-plugins`, ветка `main`, 1 коммит `6c50ff8`;
+- внутри: `dsh-computer-use/`, `artifact-panes/`, `artifacts/`, `docs/`, `tools/{cua/asar.mjs,health}`, `README.md` (англ., описание плагинов), `.gitignore`, `.gitattributes`;
+- 82 файла, 1.13 МБ; секретов не найдено (поиск по `sk-`, `ghp_`, `Bearer`, `token=`);
+- исключено: `.dsh/`, `node_modules/`, бэкапы `*.bak*`, `tools/dsh-readmes`, `tools/codex-worker`, дампы, крупные архивы.
+
+Дальше: коммитить сюда каждую значимую правку плагинов.

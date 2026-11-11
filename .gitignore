@@ -1,9 +1,29 @@
+# Whitelist: publish only the plugin packages and their docs.
+# Everything at the workspace root is ignored first, then re-included below.
+/*
+!/.gitattributes
+!/.gitignore
+!/README.md
+!/artifact-panes/
+!/artifacts/
+!/docs/
+!/dsh-computer-use/
+!/tools/
+
+# tools/ carries a lot of scratch; publish the packaged helper and health scripts
+/tools/*
+!/tools/cua/
+/tools/cua/*
+!/tools/cua/asar.mjs
+!/tools/health/
+
 # --- DSH runtime state (never commit) ---
 .dsh/
 node_modules/
 .pnpm-store/
+pnpm-lock.yaml
 
-# --- local research / backups / transfers ---
+# --- local research, backups, transfers ---
 mac-transfer/
 trips/
 dsh-ui-chat-virtual/
@@ -12,24 +32,24 @@ claude-profile-test/
 test-fixtures/
 plugin-backup-*/
 profile-backup-*/
-dump_*.txt
-dsh-mac-plugins.zip
-
-# --- tool evidence and captured media ---
 tools/codex-worker/
 tools/dsh-readmes/
-tools/dsh-files.txt
 tools/backups/
+tools/dsh-files.txt
+
+# --- captured media and crash reports stay out ---
+tools/cua/shots/*.png
+tools/cua/shots/*.mp4
+tools/cua/shots/*.gif
 docs/health/crash-*.md
 docs/health/crash-history.jsonl
 **/frames/
 *.crdownload
 
-# --- OS / editor noise ---
-Thumbs.db
-.DS_Store
-*.log
-# --- editor/agent leftovers ---
+# --- editor and agent leftovers ---
 *.bak
 *.bak-*
 **/_dbg.mjs
+Thumbs.db
+.DS_Store
+*.log
