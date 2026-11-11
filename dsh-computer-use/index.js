@@ -3,10 +3,15 @@
 // Every tool answers { ok, text }; screenshots and clips also carry an inline
 // attachment so the chat can show the picture without a second tool call.
 import { appendFileSync, readFileSync, existsSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { extname } from 'node:path';
 import { tmpdir } from 'node:os';
 
 export const inject = [];
+
+// Flash a click-through frame/marker over the window each tool touches.
+const CUA_OVERLAY = true;
 
 // ---------------------------------------------------------------- inline media
 // A tool result shows an image only when it carries an attachment reference, the
@@ -57,6 +62,31 @@ async function attachImage(ctx, filePath) {
     console.warn('[dsh-computer-use] image attach failed:', String(error && error.message || error).slice(0, 200));
     return null;
   }
+}
+
+// Overlay: the engine prints one machine-readable geometry line per window call;
+// we strip it from the reply and flash a click-through frame + click marker.
+const OVERLAY_SCRIPT = new URL('./tools/overlay.ps1', import.meta.url);
+const OVERLAY_SECONDS = 7;
+const OVERLAY_MARKER = /^\[overlay\] rect=(-?\d+,-?\d+,-?\d+,-?\d+)(?: click=(-?\d+,-?\d+))?\s*$/m;
+
+function flashOverlay(rect, click) {
+  try {
+    const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', fileURLToPath(OVERLAY_SCRIPT), '-Rect', rect, '-Seconds', String(OVERLAY_SECONDS)];
+    if (click) args.push('-Click', click);
+    const child = spawn('powershell.exe', args, { detached: true, stdio: 'ignore', windowsHide: true });
+    child.unref();
+  } catch (error) {
+    console.warn('[dsh-computer-use] overlay failed:', String(error && error.message || error).slice(0, 160));
+  }
+}
+
+function stripOverlay(text) {
+  const value = String(text || '');
+  const match = OVERLAY_MARKER.exec(value);
+  if (!match) return { text: value };
+  const cleaned = value.replace(match[0], '').replace(/\n{2,}/g, '\n').trim();
+  return { text: cleaned, rect: match[1], click: match[2] || '' };
 }
 
 // ------------------------------------------------------------------- catalogue
@@ -354,7 +384,13 @@ export function apply(ctx, config = {}) {
                 const name = key === 'depth' ? 'Delta' : key.charAt(0).toUpperCase() + key.slice(1);
                 engineArgs[name] = value;
               }
+              engineArgs.Overlay = true;
               const result = await engine(engineArgs);
+              if (result && result.text) {
+                const parsed = stripOverlay(result.text);
+                if (parsed.rect && CUA_OVERLAY) flashOverlay(parsed.rect, parsed.click);
+                if (parsed.rect) result.text = parsed.text;
+              }
               try {
                 if (result && result.ok && (spec.name === 'computer_shot' || spec.name === 'computer_video')) {
                   const produced = spec.name === 'computer_shot'

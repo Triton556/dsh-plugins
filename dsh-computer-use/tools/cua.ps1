@@ -43,7 +43,8 @@ param(
   [string]$LaunchArgsFile,
   [switch]$Park,
   [ValidateSet('mp4','gif')][string]$Format = 'mp4',
-  [int]$ProcessId = 0
+  [int]$ProcessId = 0,
+  [switch]$Overlay
 )
 
 # UTF-8 on the way out: PowerShell 5.1 defaults to the OEM code page, which
@@ -436,6 +437,21 @@ if ($Window) {
   # Target a process directly: window titles clash and change, pids do not.
   $match = Get-TopWindows | Where-Object { $_.pid -eq $ProcessId } | Select-Object -First 1
   if ($match) { $h = [System.IntPtr]$match.hwnd }
+}
+# Machine-readable geometry for the on-screen overlay (frame + click marker). The
+# agent side turns this line into an overlay process and strips it from the reply.
+if ($Overlay -and $h -ne [System.IntPtr]::Zero) {
+  try {
+    $overlayRect = New-Object Cua.Native+RECT
+    [void][Cua.Native]::GetWindowRect($h, [ref]$overlayRect)
+    $overlayClick = ''
+    if ($Action -in @('click','drag','scroll')) {
+      $sx = $overlayRect.Left + $X
+      $sy = $overlayRect.Top + $Y
+      $overlayClick = " click=$sx,$sy"
+    }
+    "[overlay] rect=$($overlayRect.Left),$($overlayRect.Top),$($overlayRect.Right),$($overlayRect.Bottom)$overlayClick"
+  } catch {}
 }
 
 switch ($Action) {
