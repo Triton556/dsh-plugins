@@ -4476,7 +4476,6 @@ return { installDivider };
           return () => window.clearInterval(timer);
         }, 'artifact-panes: transcript stats');
         ctx.effect(() => {
-        ctx.effect(() => {
           if (!SKIN_PAINT_DIET) return undefined;
           const style = document.createElement('style');
           style.dataset.dshPaintDiet = '';
@@ -4518,7 +4517,7 @@ return { installDivider };
           document.head.append(style);
           const openKeys = new Set();
           const apply = (group) => {
-            const key = group.getAttribute('data-chat-group-key') || '';
+            const key = group.getAttribute('data-chat-turn') || group.getAttribute('data-chat-group-key') || '';
             const state = openKeys.has(key) ? 'open' : 'closed';
             if (group.getAttribute('data-dsh-progress') !== state) group.setAttribute('data-dsh-progress', state);
           };
@@ -4541,6 +4540,9 @@ return { installDivider };
             if (!target || !target.closest) return;
             const group = target.closest('[data-step-process]');
             if (!group) return;
+            try { fetch('/artifact-panes/divider-diag', { method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ at: Date.now(), code: 'STEP_CLICK', key: group.getAttribute('data-chat-group-key') || '',
+                before: group.getAttribute('data-dsh-progress') || '' }) }).catch(() => {}); } catch (e) {}
             // Clicks inside the member list belong to the host.
             if (target.closest('[data-step-process-body]')) return;
             const key = group.getAttribute('data-chat-group-key') || '';
@@ -4553,6 +4555,8 @@ return { installDivider };
           document.addEventListener('click', onClick, true);
           return () => { observer.disconnect(); document.removeEventListener('click', onClick, true); style.remove(); };
         }, 'artifact-panes: collapsed step groups');
+
+        ctx.effect(() => {
           if (!GUI_AUTH_PROBE) return undefined;
           try {
             fetch('/artifact-panes/divider-diag', { method: 'POST', headers: { 'content-type': 'application/json' },
