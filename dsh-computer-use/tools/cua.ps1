@@ -450,7 +450,7 @@ if ($Overlay -and $h -ne [System.IntPtr]::Zero) {
       $sy = $overlayRect.Top + $Y
       $overlayClick = " click=$sx,$sy"
     }
-    "[overlay] rect=$($overlayRect.Left),$($overlayRect.Top),$($overlayRect.Right),$($overlayRect.Bottom)$overlayClick"
+    "[overlay] hwnd=$($h.ToInt64()) rect=$($overlayRect.Left),$($overlayRect.Top),$($overlayRect.Right),$($overlayRect.Bottom)$overlayClick"
   } catch {}
 }
 

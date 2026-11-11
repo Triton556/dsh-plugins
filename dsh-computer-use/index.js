@@ -2,10 +2,10 @@
 //
 // Every tool answers { ok, text }; screenshots and clips also carry an inline
 // attachment so the chat can show the picture without a second tool call.
-import { appendFileSync, readFileSync, existsSync } from 'node:fs';
+import { appendFileSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { extname } from 'node:path';
+import { extname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 export const inject = [];
@@ -64,20 +64,56 @@ async function attachImage(ctx, filePath) {
   }
 }
 
-// Overlay: the engine prints one machine-readable geometry line per window call;
-// we strip it from the reply and flash a click-through frame + click marker.
+// Overlay control: the engine prints one geometry line per window call; the plugin
+// turns it into state for the long-lived indicator process and strips the line.
 const OVERLAY_SCRIPT = new URL('./tools/overlay.ps1', import.meta.url);
-const OVERLAY_SECONDS = 7;
-const OVERLAY_MARKER = /^\[overlay\] rect=(-?\d+,-?\d+,-?\d+,-?\d+)(?: click=(-?\d+,-?\d+))?\s*$/m;
+const OVERLAY_STATE = join(tmpdir(), 'dsh-cua-overlay-state.json');
+const OVERLAY_PID = join(tmpdir(), 'dsh-cua-overlay.pid');
+const OVERLAY_TTL_MS = 90000;
+const OVERLAY_MARKER = /^\[overlay\] hwnd=(\d+) rect=(-?\d+,-?\d+,-?\d+,-?\d+)(?: click=(-?\d+,-?\d+))?\s*$/m;
 
-function flashOverlay(rect, click) {
+function overlayAlive() {
   try {
-    const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', fileURLToPath(OVERLAY_SCRIPT), '-Rect', rect, '-Seconds', String(OVERLAY_SECONDS)];
-    if (click) args.push('-Click', click);
-    const child = spawn('powershell.exe', args, { detached: true, stdio: 'ignore', windowsHide: true });
+    if (!existsSync(OVERLAY_PID)) return false;
+    const pid = Number(readFileSync(OVERLAY_PID, 'utf8').trim());
+    if (!Number.isFinite(pid) || pid <= 0) return false;
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+function ensureOverlay() {
+  if (overlayAlive()) return;
+  try {
+    const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', fileURLToPath(OVERLAY_SCRIPT)], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true
+    });
     child.unref();
   } catch (error) {
-    console.warn('[dsh-computer-use] overlay failed:', String(error && error.message || error).slice(0, 160));
+    console.warn('[dsh-computer-use] overlay start failed:', String(error && error.message || error).slice(0, 160));
+  }
+}
+
+// Show the controlled window + action point; the indicator itself decides whether
+// it is visible (only while that window is in the foreground, or the desktop is).
+function pushOverlay(hwnd, rect, click) {
+  try {
+    const point = String(click || '').split(',').map(Number);
+    const state = {
+      updated: Date.now(),
+      ttlMs: OVERLAY_TTL_MS,
+      screen: false,
+      target: { hwnd: Number(hwnd) || 0, rect: String(rect).split(',').map(Number) },
+      cursor: Number.isFinite(point[0]) && Number.isFinite(point[1]) ? { x: point[0], y: point[1] } : undefined
+    };
+    writeFileSync(OVERLAY_STATE, JSON.stringify(state), 'utf8');
+    ensureOverlay();
+  } catch (error) {
+    console.warn('[dsh-computer-use] overlay state failed:', String(error && error.message || error).slice(0, 160));
   }
 }
 
@@ -86,7 +122,7 @@ function stripOverlay(text) {
   const match = OVERLAY_MARKER.exec(value);
   if (!match) return { text: value };
   const cleaned = value.replace(match[0], '').replace(/\n{2,}/g, '\n').trim();
-  return { text: cleaned, rect: match[1], click: match[2] || '' };
+  return { text: cleaned, hwnd: match[1], rect: match[2], click: match[3] || '' };
 }
 
 // ------------------------------------------------------------------- catalogue
@@ -388,7 +424,7 @@ export function apply(ctx, config = {}) {
               const result = await engine(engineArgs);
               if (result && result.text) {
                 const parsed = stripOverlay(result.text);
-                if (parsed.rect && CUA_OVERLAY) flashOverlay(parsed.rect, parsed.click);
+                if (parsed.rect && CUA_OVERLAY) pushOverlay(parsed.hwnd, parsed.rect, parsed.click);
                 if (parsed.rect) result.text = parsed.text;
               }
               try {
