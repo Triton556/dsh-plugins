@@ -1,12 +1,9 @@
 # DeepSeek computer-use indicator.
 #
-# One full-screen, click-through form with a colour key (TransparencyKey) but NO
-# window opacity: mixing the two makes the key stop matching and the whole screen
-# gets a coloured wash, which is exactly the purple tint we saw.
-#
-# The inward fade is produced by spatial dithering: solid DeepSeek-blue pixels whose
-# density falls off towards the middle, so the eye reads a smooth gradient on any
-# background while every pixel stays either blue or fully transparent.
+# A full-screen, click-through window: the glow is built from a handful of nested
+# strokes and the window's constant opacity makes them translucent. Colour key plus
+# opacity together would wash the whole screen, so the form keeps the key and only
+# the strokes carry the tint - short (48 px), light and unobtrusive.
 #
 # State file written by the plugin:
 #   { "updated": <unix ms>, "ttlMs": 90000, "screen": true|false,
@@ -14,8 +11,7 @@
 param(
   [string]$StatePath = (Join-Path $env:TEMP 'dsh-cua-overlay-state.json'),
   [string]$PidPath = (Join-Path $env:TEMP 'dsh-cua-overlay.pid'),
-  [string]$LogPath = (Join-Path $env:TEMP 'dsh-cua-overlay.log'),
-  [int]$Depth = 96
+  [string]$LogPath = (Join-Path $env:TEMP 'dsh-cua-overlay.log')
 )
 
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
@@ -36,36 +32,23 @@ function Note([string]$text) {
 try { [System.IO.File]::WriteAllText($PidPath, [string]$PID, (New-Object System.Text.UTF8Encoding($false))) } catch {}
 Note "start pid=$PID"
 
-$fuchsia = [System.Drawing.Color]::Fuchsia
-$blue = [System.Drawing.Color]::FromArgb(92, 124, 255)
-$brand = [System.Drawing.Color]::FromArgb(77, 107, 254)
-$virtual = [System.Windows.Forms.SystemInformation]::VirtualScreen
-$width = $virtual.Width
-$height = $virtual.Height
+$spritePath = Join-Path $PSScriptRoot 'cursor-arrow.png'
+$sprite = $null
+try { if (Test-Path -LiteralPath $spritePath) { $sprite = [System.Drawing.Image]::FromFile($spritePath) } } catch {}
 
-# Pre-rendered dithered edge: cheap to blit, and it is the actual "fade".
-$edge = New-Object System.Drawing.Bitmap($width, $height, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
-$eg = [System.Drawing.Graphics]::FromImage($edge)
-$eg.Clear($fuchsia)
-$dot = New-Object System.Drawing.SolidBrush($blue)
-for ($k = 0; $k -lt $Depth; $k++) {
-  $c = [Math]::Pow(1.0 - ($k / $Depth), 1.55)
-  if ($c -le 0.02) { continue }
-  $step = [int][Math]::Max(1, [Math]::Round(1.0 / $c))
-  # top and bottom rows
-  for ($x = 0; $x -lt $width; $x += $step) {
-    $eg.FillRectangle($dot, $x, $k, 1, 1)
-    $eg.FillRectangle($dot, $x, ($height - 1 - $k), 1, 1)
-  }
-  # left and right columns
-  for ($y = 0; $y -lt $height; $y += $step) {
-    $eg.FillRectangle($dot, $k, $y, 1, 1)
-    $eg.FillRectangle($dot, ($width - 1 - $k), $y, 1, 1)
-  }
-}
-$dot.Dispose()
-$eg.Dispose()
-Note 'edge dithered'
+$fuchsia = [System.Drawing.Color]::Fuchsia
+# short, light ramp: 8 strokes of 6 px, fading towards the middle of the screen
+$bands = @(
+  [System.Drawing.Color]::FromArgb(77, 107, 254),
+  [System.Drawing.Color]::FromArgb(97, 125, 255),
+  [System.Drawing.Color]::FromArgb(117, 143, 255),
+  [System.Drawing.Color]::FromArgb(137, 161, 255),
+  [System.Drawing.Color]::FromArgb(157, 179, 255),
+  [System.Drawing.Color]::FromArgb(177, 197, 255),
+  [System.Drawing.Color]::FromArgb(197, 213, 255),
+  [System.Drawing.Color]::FromArgb(217, 229, 255)
+)
+$virtual = [System.Windows.Forms.SystemInformation]::VirtualScreen
 
 $form = New-Object System.Windows.Forms.Form
 $form.FormBorderStyle = 'None'
@@ -94,25 +77,27 @@ $form.Add_Paint({
   param($sender, $e)
   if (-not $script:active) { return }
   $g = $e.Graphics
-  $g.DrawImageUnscaled($edge, 0, 0)
+  $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::None
+  $w = $sender.ClientSize.Width
+  $h = $sender.ClientSize.Height
+
+  $thickness = 6
+  $inset = 0
+  foreach ($color in $bands) {
+    $pen = New-Object System.Drawing.Pen($color, $thickness)
+    $rect = New-Object System.Drawing.Rectangle($inset, $inset, ($w - $inset * 2 - 1), ($h - $inset * 2 - 1))
+    $g.DrawRectangle($pen, $rect)
+    $pen.Dispose()
+    $inset += $thickness
+  }
+
   if ($script:curX -ge 0) {
-    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
     $x = [single]($script:curX - $virtual.X)
     $y = [single]($script:curY - $virtual.Y)
-    $fill = New-Object System.Drawing.SolidBrush($brand)
-    $outline = New-Object System.Drawing.Pen([System.Drawing.Color]::White, 1.7)
-    $points = @(
-      (New-Object System.Drawing.PointF(($x + 1), ($y + 1))),
-      (New-Object System.Drawing.PointF(($x + 1), ($y + 23))),
-      (New-Object System.Drawing.PointF(($x + 7), ($y + 17))),
-      (New-Object System.Drawing.PointF(($x + 12), ($y + 28))),
-      (New-Object System.Drawing.PointF(($x + 16), ($y + 26))),
-      (New-Object System.Drawing.PointF(($x + 12), ($y + 16))),
-      (New-Object System.Drawing.PointF(($x + 20), ($y + 16)))
-    )
-    $g.FillPolygon($fill, $points)
-    $g.DrawPolygon($outline, $points)
-    $fill.Dispose(); $outline.Dispose()
+    if ($sprite) {
+      $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
+      $g.DrawImage($sprite, ($x - 1), ($y - 1), 40, 40)
+    }
   }
 })
 
