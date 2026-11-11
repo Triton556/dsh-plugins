@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Little Stones · игровой день</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f4ee;
+    --panel: #fffdf9;
+    --ink: #23211d;
+    --ink-soft: #5f5a51;
+    --line: #e4ded2;
+    --accent: #b3552b;
+    --accent-soft: #f3e2d6;
+    --night: #2c3440;
+    --night-soft: #dfe5ec;
+    --ok: #3f7a55;
+    --warn: #9a6b1f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #191817;
+      --panel: #211f1d;
+      --ink: #ece7de;
+      --ink-soft: #a49d91;
+      --line: #35312c;
+      --accent: #e08a5f;
+      --accent-soft: #3a2a22;
+      --night: #aebdcc;
+      --night-soft: #26303a;
+      --ok: #7fb08f;
+      --warn: #d8b06a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 32px 24px 44px; }
+  .eyebrow { font-size: 11px; letter-spacing: .18em; text-transform: uppercase; color: var(--accent); }
+  h1 { margin: 8px 0 6px; font-size: clamp(26px, 4.6vw, 36px); line-height: 1.1; letter-spacing: -0.02em; font-weight: 650; }
+  .lede { margin: 0 0 22px; max-width: 62ch; color: var(--ink-soft); }
+
+  .clock { position: relative; height: 76px; border-radius: 14px; overflow: hidden; border: 1px solid var(--line); background: var(--panel); }
+  .arc-sky { position: absolute; inset: 0; background: linear-gradient(90deg, var(--night-soft) 0 18%, var(--accent-soft) 34%, #f6e7c8 50%, var(--accent-soft) 66%, var(--night-soft) 82% 100%); opacity: .85; }
+  .arc-day { position: absolute; left: 18%; right: 18%; top: 12px; height: 52px; border-radius: 50% 50% 0 0; border-top: 2px dashed rgba(0,0,0,.18); }
+  .clock-labels { position: absolute; inset: auto 0 6px; display: flex; justify-content: space-between; padding: 0 12px; font-size: 10.5px; letter-spacing: .08em; color: var(--ink-soft); text-transform: uppercase; }
+  .sun { position: absolute; top: 10px; width: 14px; height: 14px; border-radius: 50%; background: #e0a13a; box-shadow: 0 0 0 4px rgba(224,161,58,.18); transition: left .35s ease, top .35s ease, background .35s; }
+  .phases { display: grid; gap: 8px; grid-template-columns: repeat(2, 1fr); margin: 16px 0 18px; }
+  @media (min-width: 700px) { .phases { grid-template-columns: repeat(4, 1fr); } }
+  .phase {
+    text-align: left; border: 1px solid var(--line); background: var(--panel); color: inherit;
+    border-radius: 12px; padding: 12px 13px; cursor: pointer; font: inherit;
+    transition: border-color .15s, transform .15s, background .15s;
+  }
+  .phase:hover { border-color: var(--accent); }
+  .phase[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
+  .phase b { display: block; font-size: 13.5px; margin-bottom: 2px; }
+  .phase span { font-size: 11.5px; color: var(--ink-soft); letter-spacing: .04em; text-transform: uppercase; }
+
+  .board { display: grid; gap: 14px; grid-template-columns: 1fr; }
+  @media (min-width: 760px) { .board { grid-template-columns: 1.35fr 1fr; } }
+  .stage { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; min-height: 240px; }
+  .stage h2 { margin: 0 0 4px; font-size: 20px; letter-spacing: -0.01em; }
+  .stage .when { font-size: 12px; color: var(--accent); letter-spacing: .08em; text-transform: uppercase; }
+  .stage p { margin: 10px 0 0; color: var(--ink-soft); font-size: 14px; }
+  .stage ul { margin: 12px 0 0; padding-left: 18px; color: var(--ink-soft); font-size: 13.5px; }
+  .stage li { margin: 4px 0; }
+
+  .side { display: flex; flex-direction: column; gap: 12px; }
+  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 13px 15px; }
+  .stat .label { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-soft); }
+  .stat .value { font-size: 22px; letter-spacing: -0.02em; margin-top: 2px; }
+  .stat .hint { font-size: 12px; color: var(--ink-soft); }
+  .bar { height: 7px; border-radius: 999px; background: var(--line); overflow: hidden; margin-top: 8px; }
+  .bar > i { display: block; height: 100%; background: var(--accent); border-radius: 999px; transition: width .3s ease; }
+
+  .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 18px; }
+  button.act {
+    font: inherit; font-size: 13.5px; padding: 8px 15px; border-radius: 9px; cursor: pointer;
+    border: 1px solid var(--accent); background: var(--accent); color: #fff;
+  }
+  button.act.ghost { background: transparent; color: var(--accent); }
+  button.act:focus-visible, .phase:focus-visible, input[type="range"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .waves { display: flex; align-items: center; gap: 10px; margin-left: auto; font-size: 12.5px; color: var(--ink-soft); }
+  input[type="range"] { width: 120px; accent-color: var(--accent); }
+  footer { margin-top: 22px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--ink-soft); font-size: 12px; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="eyebrow">Little Stones · интерактив</div>
+  <h1>Один день поселения</h1>
+  <p class="lede">Сутки — 24 игровых часа. День уходит на экономику, ночь проверяет, что успел построить. Прощёлкайте фазы: в каждой свой набор решений.</p>
+
+  <div class="clock" aria-hidden="true">
+    <div class="arc-sky"></div>
+    <div class="arc-day"></div>
+    <div class="sun" id="sun" style="left: 8%"></div>
+    <div class="clock-labels"><span>00</span><span>06</span><span>12</span><span>18</span><span>24</span></div>
+  </div>
+
+  <div class="phases" role="group" aria-label="Фазы дня">
+    <button class="phase" data-phase="dawn" aria-pressed="true"><b>Рассвет</b><span>06–09</span></button>
+    <button class="phase" data-phase="day" aria-pressed="false"><b>День</b><span>09–18</span></button>
+    <button class="phase" data-phase="dusk" aria-pressed="false"><b>Закат</b><span>18–21</span></button>
+    <button class="phase" data-phase="night" aria-pressed="false"><b>Ночь</b><span>21–06</span></button>
+  </div>
+
+  <div class="board">
+    <div class="stage" aria-live="polite">
+      <div class="when" id="when">06:00–09:00</div>
+      <h2 id="stage-title">Рассвет: осмотр и план</h2>
+      <p id="stage-text">После ночи видно, что выдержало. Сначала — потери и ремонт, потом план на день: что добываем, что достраиваем, где ставим факелы.</p>
+      <ul id="stage-list">
+        <li>Обойти стену: где пролом, где прогорели доски</li>
+        <li>Раздать приоритеты: ремонт важнее новой стройки</li>
+        <li>Проверить запас камня и дерева на ночь</li>
+      </ul>
+    </div>
+
+    <div class="side">
+      <div class="stat">
+        <div class="label">Свет</div>
+        <div class="value" id="light-value">Факелы горят</div>
+        <div class="hint" id="light-hint">Ночью свет — часть обороны, а не украшение.</div>
+      </div>
+      <div class="stat">
+        <div class="label">Готовность к ночи</div>
+        <div class="value" id="ready-value">—</div>
+        <div class="bar"><i id="ready-bar" style="width: 20%"></i></div>
+        <div class="hint" id="ready-hint">Иллюстрация, не баланс: показывает, как фазы связаны между собой.</div>
+      </div>
+      <div class="stat">
+        <div class="label">Волна</div>
+        <div class="value" id="wave-value">1-я ночь</div>
+        <div class="hint" id="wave-hint">Волны приходят ночью; сила растёт по мере роста поселения.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button class="act" id="next">Следующая фаза →</button>
+    <button class="act ghost" id="reset">С начала</button>
+    <div class="waves">
+      <label for="wave">Ночь</label>
+      <input id="wave" type="range" min="1" max="6" step="1" value="1" />
+      <span id="wave-label">1</span>
+    </div>
+  </div>
+
+  <footer>Составлено по решениям проекта от 30.10–05.11.2026. Числа волн и «готовности» — иллюстрация связей между фазами, а не игровой баланс.</footer>
+</div>
+<script>
+  (function () {
+    var phases = [
+      {
+        id: 'dawn', when: '06:00–09:00', title: 'Рассвет: осмотр и план',
+        text: 'После ночи видно, что выдержало. Сначала — потери и ремонт, потом план на день: что добываем, что достраиваем, где ставим факелы.',
+        list: ['Обойти стену: где пролом, где прогорели доски', 'Раздать приоритеты: ремонт важнее новой стройки', 'Проверить запас камня и дерева на ночь'],
+        light: 'Факелы догорают', lightHint: 'Часть света сгорела за ночь — до темноты нужно заменить.',
+        ready: 25, readyHint: 'После ночи готовность падает: ремонт ещё не сделан.',
+        hour: 7.5
+      },
+      {
+        id: 'day', when: '09:00–18:00', title: 'День: добыча и стройка',
+        text: 'Основной ресурсный блок. Рабочие тянут камень и дерево, стройка идёт по приоритетам: простой режим сам перераспределяет работников, продвинутый — точная раздача.',
+        list: ['Добыча: крупное — по одному, доски — по несколько', 'Стройка стены и перекрытий: без перевязки кладка стоит, но падает', 'Ловушки: прогорающие доски, сбрасывающие блоки'],
+        light: 'Свет не нужен', lightHint: 'Днём факелы не тратятся — время копить запас на ночь.',
+        ready: 60, readyHint: 'Стройка идёт, но до готовности к волне ещё далеко.',
+        hour: 13.5
+      },
+      {
+        id: 'dusk', when: '18:00–21:00', title: 'Закат: последние приготовления',
+        text: 'Короткая фаза, где решается ночь: расставить роли по снаряжению, зажечь факелы, закрыть проходы и убрать работников со стены.',
+        list: ['Меч и щит — рыцарю у ворот, лук — лучнику на стену', 'Зажечь факелы по периметру', 'Проверить, что все рабочие внутри'],
+        light: 'Зажигаем факелы', lightHint: 'Свет выставляется по периметру — это и есть линия обороны.',
+        ready: 85, readyHint: 'Последний шанс закрыть дыры до волны.',
+        hour: 19.5
+      },
+      {
+        id: 'night', when: '21:00–06:00', title: 'Ночь: волна',
+        text: 'Волна идёт на поселение. Держат стены, ловушки и роли: рыцарь в проходе, лучник на высоте. Утро покажет цену решений, принятых днём.',
+        list: ['Волна бьёт по слабому месту стены', 'Ловушки срабатывают один раз — их надо переставлять', 'Потери среди LittleStone — не «юниты», а свои человечки'],
+        light: 'Только факелы', lightHint: 'Без света ночью не видно, откуда идёт волна.',
+        ready: 100, readyHint: 'Волна проверяет всё, что успели сделать за день.',
+        hour: 2
+      }
+    ];
+
+    var index = 0;
+    var title = document.getElementById('stage-title');
+    var text = document.getElementById('stage-text');
+    var list = document.getElementById('stage-list');
+    var when = document.getElementById('when');
+    var sun = document.getElementById('sun');
+    var lightValue = document.getElementById('light-value');
+    var lightHint = document.getElementById('light-hint');
+    var readyValue = document.getElementById('ready-value');
+    var readyBar = document.getElementById('ready-bar');
+    var readyHint = document.getElementById('ready-hint');
+    var waveInput = document.getElementById('wave');
+    var waveValue = document.getElementById('wave-value');
+    var waveLabel = document.getElementById('wave-label');
+    var buttons = Array.prototype.slice.call(document.querySelectorAll('.phase'));
+
+    function sunLeft(hour) {
+      // 0..24 -> 4%..92%, ночной провал по краям
+      var t = hour / 24;
+      return (4 + t * 88).toFixed(1) + '%';
+    }
+
+    function paint() {
+      var p = phases[index];
+      when.textContent = p.when;
+      title.textContent = p.title;
+      text.textContent = p.text;
+      list.textContent = '';
+      p.list.forEach(function (item) {
+        var li = document.createElement('li');
+        li.textContent = item;
+        list.appendChild(li);
+      });
+      lightValue.textContent = p.light;
+      lightHint.textContent = p.lightHint;
+      readyValue.textContent = p.ready + '%';
+      readyBar.style.width = p.ready + '%';
+      readyHint.textContent = p.readyHint;
+      sun.style.left = sunLeft(p.hour);
+      sun.style.top = (p.id === 'night' ? '46px' : p.id === 'dusk' ? '38px' : p.id === 'dawn' ? '38px' : '12px');
+      sun.style.background = p.id === 'night' ? '#9fb0bd' : '#e0a13a';
+      buttons.forEach(function (b) {
+        b.setAttribute('aria-pressed', b.getAttribute('data-phase') === p.id ? 'true' : 'false');
+      });
+      var n = parseInt(waveInput.value, 10);
+      waveValue.textContent = n + (n === 1 ? '-я ночь' : '-я ночь');
+      waveLabel.textContent = String(n);
+      if (p.id === 'night') {
+        waveValue.textContent = n + '-я волна';
+        waveHint.textContent = 'Волна ' + n + ': по мере роста поселения приходит больше врагов — держат стены, ловушки и роли.';
+      } else {
+        waveHint.textContent = 'Следующая волна ночью. Каждая ночь проверяет то, что построено днём.';
+      }
+    }
+
+    buttons.forEach(function (b) {
+      b.addEventListener('click', function () {
+        var id = b.getAttribute('data-phase');
+        index = phases.map(function (p) { return p.id; }).indexOf(id);
+        paint();
+      });
+    });
+    document.getElementById('next').addEventListener('click', function () {
+      index = (index + 1) % phases.length;
+      paint();
+    });
+    document.getElementById('reset').addEventListener('click', function () {
+      index = 0;
+      waveInput.value = '1';
+      paint();
+    });
+    waveInput.addEventListener('input', paint);
+    paint();
+  })();
+</script>
+</body>
+</html>

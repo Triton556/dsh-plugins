@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Little Stones · вехи и производство</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f4ee;
+    --panel: #fffdf9;
+    --ink: #23211d;
+    --ink-soft: #5f5a51;
+    --line: #e4ded2;
+    --accent: #b3552b;
+    --accent-soft: #f3e2d6;
+    --ok: #3f7a55;
+    --done: #3f7a55;
+    --next: #b3552b;
+    --later: #9aa0a6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #191817;
+      --panel: #211f1d;
+      --ink: #ece7de;
+      --ink-soft: #a49d91;
+      --line: #35312c;
+      --accent: #e08a5f;
+      --accent-soft: #3a2a22;
+      --ok: #7fb08f;
+      --done: #7fb08f;
+      --next: #e08a5f;
+      --later: #6f7479;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 34px 24px 46px; }
+  .eyebrow { font-size: 11px; letter-spacing: .18em; text-transform: uppercase; color: var(--accent); }
+  h1 { margin: 8px 0 6px; font-size: clamp(26px, 4.6vw, 36px); letter-spacing: -0.02em; line-height: 1.1; font-weight: 650; }
+  .lede { margin: 0 0 24px; max-width: 64ch; color: var(--ink-soft); }
+
+  .road { position: relative; margin: 0; padding: 0 0 0 26px; list-style: none; }
+  .road::before { content: ''; position: absolute; left: 8px; top: 6px; bottom: 6px; width: 2px; background: var(--line); }
+  .mil { position: relative; padding: 0 0 18px; }
+  .mil::before {
+    content: ''; position: absolute; left: -24px; top: 6px; width: 12px; height: 12px; border-radius: 50%;
+    background: var(--panel); border: 2px solid var(--later);
+  }
+  .mil.done::before { background: var(--done); border-color: var(--done); }
+  .mil.next::before { background: var(--next); border-color: var(--next); box-shadow: 0 0 0 4px color-mix(in srgb, var(--next) 18%, transparent); }
+  .mil .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .mil .top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+  .mil b.m { font-size: 12px; letter-spacing: .1em; color: var(--accent); }
+  .mil h2 { margin: 0; font-size: 16px; font-weight: 600; }
+  .mil p { margin: 0; color: var(--ink-soft); font-size: 13.5px; }
+  .tag { margin-left: auto; font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--ink-soft); }
+  .tag.done { color: var(--done); border-color: color-mix(in srgb, var(--done) 40%, var(--line)); }
+  .tag.next { color: var(--next); border-color: color-mix(in srgb, var(--next) 45%, var(--line)); }
+
+  .cols { display: grid; gap: 14px; margin-top: 26px; grid-template-columns: 1fr; }
+  @media (min-width: 680px) { .cols { grid-template-columns: 1fr 1fr; } }
+  .box { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+  .box h3 { margin: 0 0 8px; font-size: 13px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-soft); font-weight: 600; }
+  .box ul { margin: 0; padding-left: 18px; color: var(--ink-soft); font-size: 13.5px; }
+  .box li { margin: 5px 0; }
+  .box .big { font-size: 26px; letter-spacing: -0.02em; margin: 0 0 2px; }
+  .box .sub { margin: 0; color: var(--ink-soft); font-size: 12.5px; }
+  .pipe { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .pipe span { font-size: 12px; padding: 4px 10px; border-radius: 8px; background: var(--accent-soft); color: var(--ink); }
+  .arrow { align-self: center; color: var(--ink-soft); font-size: 12px; }
+  footer { margin-top: 22px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--ink-soft); font-size: 12px; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="eyebrow">Little Stones · производство</div>
+  <h1>Вехи и путь к раннему доступу</h1>
+  <p class="lede">План из 12 этапов, сжатый до решающих точек. Ранний доступ — после M5, PvP — первое большое обновление (M6). Демо для Next Fest и решение о финансировании — на M4.</p>
+
+  <ol class="road">
+    <li class="mil done">
+      <div class="card">
+        <div class="top"><b class="m">M0–M1</b><h2>Ядро и вертикальный срез</h2><span class="tag done">сделано</span></div>
+        <p>Прототип на готовых ассетах: добыча, переноска по материалам, стройка с обрушениями, ночные волны. Кристалл как в оригинале — временно, чтобы проверить механики.</p>
+      </div>
+    </li>
+    <li class="mil done">
+      <div class="card">
+        <div class="top"><b class="m">M2–M3</b><h2>Экономика, роли, сеть</h2><span class="tag done">сделано</span></div>
+        <p>Роль по снаряжению: рабочий, рыцарь, лучник. Простой и продвинутый режимы раздачи работ. Базовая сеть с возможностью переписать; клиентское предсказание против видимых лагов.</p>
+      </div>
+    </li>
+    <li class="mil next">
+      <div class="card">
+        <div class="top"><b class="m">M4</b><h2>Демо и Next Fest</h2><span class="tag next">следующая</span></div>
+        <p>Демо для фестиваля, проверка Steam Deck без обещаний, решение о краудфандинге по YouTube-роликам или издателе. Параллельно — девлоги и шортсы для канала игры.</p>
+      </div>
+    </li>
+    <li class="mil">
+      <div class="card">
+        <div class="top"><b class="m">M5</b><h2>Ранний доступ</h2><span class="tag">впереди</span></div>
+        <p>Ядро и PvE-кооператив на 2–4 игрока: каждое поселение защищает общее от волн. Цель по масштабу: 150 LittleStone, 100 врагов, остров 256×256×128, 60 FPS на среднем ПК.</p>
+      </div>
+    </li>
+    <li class="mil">
+      <div class="card">
+        <div class="top"><b class="m">M6</b><h2>PvP</h2><span class="tag">впереди</span></div>
+        <p>Подкоп под базу, катапульты, борьба поселений. PvP — важная основа тизеров: если готов к раннему доступу, выходит вместе с ним.</p>
+      </div>
+    </li>
+    <li class="mil">
+      <div class="card">
+        <div class="top"><b class="m">M7–M12</b><h2>История и контент</h2><span class="tag">впереди</span></div>
+        <p>Лёгкий сюжетный каркас острова поверх событий поселения: механизм событий, хроники и реакции LittleStone. Авторские моменты добавляются позже как данные.</p>
+      </div>
+    </li>
+  </ol>
+
+  <div class="cols">
+    <div class="box">
+      <h3>Цели масштаба</h3>
+      <p class="big">150 / 100</p>
+      <p class="sub">LittleStone и врагов в волне</p>
+      <ul>
+        <li>Остров 256×256×128 блоков</li>
+        <li>2–4 игрока, PvE-кооператив</li>
+        <li>60 FPS на среднем ПК (≈6 ядер, GTX 1660)</li>
+        <li>Steam Deck — проверка с M4, без обещаний</li>
+      </ul>
+    </div>
+    <div class="box">
+      <h3>Ассеты и арт</h3>
+      <p class="sub">Пока своих 3D-моделей нет — прототип на бесплатных; своя модель потом встаёт на место готовой.</p>
+      <div class="pipe">
+        <span>KayKit</span><span class="arrow">→</span><span>Mixamo</span><span class="arrow">→</span><span>Humanoid-аватар</span><span class="arrow">→</span><span>своя модель</span>
+      </div>
+      <ul>
+        <li>Одинаковые имена клипов — чтобы замена была без переделки</li>
+        <li>Мудборд второй волны: сцены и листы, лист глаз 4×4, эмоции</li>
+        <li>Звук: встроенное аудио Unity через слой игровых событий; FMOD и Wwise — сравнение на стенде</li>
+      </ul>
+    </div>
+  </div>
+
+  <footer>Собрано по решениям проекта от 30.10–05.11.2026. Статусы вех — из плана; счётчики задач на доске меняются ежедневно.</footer>
+</div>
+</body>
+</html>

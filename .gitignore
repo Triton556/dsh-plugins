@@ -1,0 +1,35 @@
+# --- DSH runtime state (never commit) ---
+.dsh/
+node_modules/
+.pnpm-store/
+
+# --- local research / backups / transfers ---
+mac-transfer/
+trips/
+dsh-ui-chat-virtual/
+dsh-asar-inspect/
+claude-profile-test/
+test-fixtures/
+plugin-backup-*/
+profile-backup-*/
+dump_*.txt
+dsh-mac-plugins.zip
+
+# --- tool evidence and captured media ---
+tools/codex-worker/
+tools/dsh-readmes/
+tools/dsh-files.txt
+tools/backups/
+docs/health/crash-*.md
+docs/health/crash-history.jsonl
+**/frames/
+*.crdownload
+
+# --- OS / editor noise ---
+Thumbs.db
+.DS_Store
+*.log
+# --- editor/agent leftovers ---
+*.bak
+*.bak-*
+**/_dbg.mjs

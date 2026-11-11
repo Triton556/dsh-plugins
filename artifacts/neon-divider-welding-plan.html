@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Неоновый разделитель — сварочные искры и разряды</title>
+<style>
+  :root{font:14px/1.45 system-ui,sans-serif;color:#202329;background:#f5f6fa;--blue:#4d6bfe;--red:#e5484d}
+  *{box-sizing:border-box}body{margin:0;height:100vh;display:flex;flex-direction:column;padding:14px;gap:10px}
+  button,select,input{font:inherit}button,select{padding:5px 9px;border:1px solid #d9dce5;border-radius:7px;background:white}
+  header{display:flex;gap:12px;align-items:center;flex-wrap:wrap}h1{font-size:16px;margin:0 auto 0 0}
+  label{display:flex;align-items:center;gap:6px;font-size:12px}input{width:95px}
+  .notice{margin:0;color:#626979;font-size:12px}.metrics{font-size:12px;min-height:37px;white-space:pre-wrap}
+  .frame{position:relative;display:grid;flex:1;min-height:340px;overflow:hidden;outline:1px solid #d9dce5;border-radius:10px;background:#fff}
+  .sidebar{overflow:hidden;background:#eef1f9;padding:18px;white-space:nowrap;border-right:1px solid #dce1ec}
+  .sidebar p{font-size:12px;color:#626979}.chat{min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+  .chatHeader{height:48px;flex:none;padding:14px 16px;border-bottom:1px solid #eceef4;font-size:13px}
+  .messages{min-height:0;flex:1;overflow:auto;scrollbar-gutter:stable;padding:0 16px 16px}
+  .message{max-width:760px;margin:14px auto;padding:14px;border:1px solid #e3e6ee;border-radius:12px;font-size:13px}
+  .message.user{background:#edf1ff}.message h2{font-size:15px;margin:0 0 7px}.message p{margin:6px 0}
+  .composer{flex:none;height:76px;min-height:76px;width:calc(100% - 32px);max-width:760px;margin:0 auto 16px;padding:14px;border:1px solid #d6dce9;border-radius:12px;font-size:12px;color:#717887}
+  .right{min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden;border-left:1px solid #dce1ec;background:#fafbfe}
+  .tabs{height:44px;flex:none;display:flex;align-items:center;gap:14px;padding:0 14px;overflow:hidden;white-space:nowrap;border-bottom:1px solid #dce1ec;font-size:12px}
+  .pane{flex:1;overflow:auto;padding:16px;scrollbar-gutter:stable}.pane h2{font-size:19px;line-height:1.25;margin:0 0 12px}
+  .card{padding:12px;background:white;border:1px solid #dce1ec;border-radius:10px;margin:12px 0}.card h3{font-size:14px;margin:0 0 8px}
+  .framePlaceholder{height:180px;border:1px dashed #9ba9cd;border-radius:8px;padding:12px;overflow:hidden;color:#626979;background:#f2f5ff}
+  .handle{position:absolute;inset:0 auto 0 0;width:14px;margin-left:-7px;cursor:col-resize;touch-action:none;z-index:4;background:transparent;border:0;padding:0}
+  .handle::before{content:"";position:absolute;inset:0 5px;background:#a7afc0;border-radius:3px}.handle:hover::before{background:var(--blue)}
+  .frame[data-busy]>.handle{opacity:0}.guide{position:absolute;top:0;bottom:0;width:2px;z-index:6;pointer-events:none;box-shadow:0 0 10px currentColor}
+  .effects{position:absolute;inset:0;z-index:7;pointer-events:none;overflow:hidden;background:transparent}
+  .beam{position:absolute;top:0;bottom:0;width:2px;box-shadow:0 0 10px currentColor;background:currentColor}
+  .tip{position:absolute;top:0;width:6px;height:6px;margin-left:-2px;border-radius:50%;background:#fff;box-shadow:0 0 12px currentColor}
+  .tip svg{position:absolute;left:-4px;top:-8px;width:17px;height:26px;stroke:currentColor;fill:none;stroke-width:1.5}
+  .spark{position:absolute;width:3px;height:3px;border-radius:50%;background:currentColor;opacity:0}
+  .measurementHost{position:fixed;left:-100000px;top:0;visibility:hidden;pointer-events:none;contain:layout style paint}
+  .measurementHost .frame{height:100%;border-radius:0}.measurementHost .handle{display:none}
+  .arcBurst{position:absolute;width:124px;height:154px;overflow:visible;opacity:0}
+  .arcGlow{fill:none;stroke:currentColor;stroke-width:7;opacity:.38;filter:blur(2px)}
+  .arcMid{fill:none;stroke:#89dfff;stroke-width:2.8;opacity:.85}
+  .arcCore{fill:none;stroke:#effcff;stroke-width:1.1;stroke-linejoin:round}
+  .spark{border-radius:2px;box-shadow:0 0 4px #ffb34d90;transform-origin:center}
+</style>
+<header>
+  <h1>Неоновая сварка · снизу вверх</h1>
+  <label>Линия <input id="duration" type="range" min="0.5" max="1.5" step="0.1" value="0.9"><output id="durationValue">0.9 с</output></label>
+  <span class="notice">Снизу вверх · геометрия контейнеров</span>
+  <button id="reset" type="button">Сбросить</button>
+</header>
+<p class="notice">Самостоятельный макет. Во время перетаскивания движется только линия. Затем расчёт, затем изменение настоящей ширины. Текст переносится браузером. Нижняя строка показывает порядок этапов.</p>
+<div class="metrics" id="metrics" role="status">Перетащите разделитель. Снизу вверх: искры разлетаются и гаснут, разряды ветвятся на самой линии.</div>
+<main class="frame" id="frame">
+  <nav class="sidebar"><b>Рабочее пространство</b><p>Пример диалога</p><p>Материалы</p><p>История</p></nav>
+  <section class="chat" data-geometry="chat">
+    <div class="chatHeader">Диалог · пример содержимого</div>
+    <div class="messages" data-geometry="messages">
+      <article class="message user" data-measure="user">Можно ли заранее рассчитать новое положение компонентов, пока проходит вертикальная линия?</article>
+      <article class="message" data-measure="answer"><h2>Контейнеры и содержимое</h2><p>Границы колонок рассчитываются по ширине окна и ограничениям панели. На этом этапе видимая сетка сохраняет прежнюю геометрию.</p><p>Переносы строк определяет браузер. При изменении ширины буквы сохраняют пропорции, а строки могут переходить на следующую строку. Это не гарантирует ровную анимацию сложного документа.</p></article>
+      <article class="message" data-measure="details"><h2>Что проверяет этот макет</h2><p>После завершения линии начинается изменение реальных колонок. Геометрия контейнеров считается во время линии. Дополнительный режим убран: он давал те же видимые координаты, добавляя только измерения.</p><p>В рабочем приложении нельзя без участия компонента измерить содержимое изолированного iframe или отсутствующие элементы виртуального списка.</p></article>
+    </div>
+    <div class="composer" data-geometry="composer">Поле ввода макета<br>Этот пример не читает и не меняет реальные черновики.</div>
+  </section>
+  <aside class="right" data-geometry="right">
+    <div class="tabs" data-geometry="tabs">Материалы · Файлы</div>
+    <div class="pane"><h2 data-measure="heading">Проверьте движение без искажения букв</h2><p data-measure="intro">Сначала вертикальная линия и подготовка конечных размеров. Затем браузер меняет ширину контейнеров.</p><div class="card" data-measure="card"><h3>Текст меняет переносы</h3>Промежуточные ширины всё ещё требуют работы браузера. Одни только конечные координаты не устраняют этот расчёт.</div><div class="framePlaceholder" data-measure="iframe-box">Граница iframe — условный блок.<br>Настоящий iframe здесь не создаётся и не загружается.</div></div>
+  </aside>
+  <button class="handle" id="handle" type="button" aria-label="Изменить ширину панели" title="Перетащить; стрелки меняют ширину после линии"></button>
+</main>
+<script id="geometry-model">
+// Pure model; Node checks execute this exact block without a browser.
+const GeometryModel = (() => {
+  const clampWidth = (px, min, max) => Math.min(max, Math.max(min, Math.round(px)));
+  function columns(viewport, sidebar, rightbar, collapsedWidth = 56, centeredSidebar = false) {
+    const s = sidebar === 0 ? collapsedWidth : centeredSidebar ? viewport / 2 : clampWidth(sidebar, 264, 420);
+    const available = viewport - s - 400;
+    const r = rightbar === 0 || available < 300 ? 0 : Math.min(available, clampWidth(rightbar, 300, viewport * .7));
+    return { sidebar: s, center: Math.max(0, viewport - s - r), rightbar: r };
+  }
+  function plan(frame, releaseX, options = {}) {
+    const preference = clampWidth(frame.left + frame.width - releaseX, 300, Math.max(300, frame.width * .7));
+    const sidebarPreference = options.sidebar ?? (frame.width < 1024 ? 0 : 280);
+    const c = columns(frame.width, sidebarPreference, preference, options.collapsedWidth ?? 0, options.centeredSidebar ?? false);
+    const x = frame.width - c.rightbar;
+    const composerWidth = Math.max(0, Math.min(760, c.center - 32));
+    return {
+      preference, columns: c, dividerX: x, canResize: frame.width >= 768 && c.rightbar > 0,
+      grid: `${c.sidebar}px ${c.center}px ${c.rightbar}px`,
+      chat: { x: c.sidebar, y: 0, width: c.center, height: frame.height },
+      messages: { x: c.sidebar, y: 48, width: c.center, height: Math.max(0, frame.height - 140) },
+      right: { x, y: 0, width: c.rightbar, height: frame.height },
+      composer: { x: c.sidebar + (c.center - composerWidth) / 2, y: frame.height - 92, width: composerWidth, height: 76 },
+      tabs: { x, y: 0, width: c.rightbar, height: 44 }
+    };
+  }
+  function gate(onReady) {
+    let geometry = null, scanEnded = false, cancelled = false, committed = false;
+    function attempt() {
+      if (!cancelled && !committed && scanEnded && geometry) {
+        committed = true;
+        onReady(geometry);
+      }
+    }
+    return {
+      prepared(value) { if (!cancelled && !committed) geometry = value; attempt(); },
+      scanEnded() { scanEnded = true; attempt(); },
+      cancel() { cancelled = true; geometry = null; },
+      state: () => ({ hasGeometry: !!geometry, scanEnded, cancelled, committed })
+    };
+  }
+  return { columns, plan, gate };
+})();
+</script>
+
+<script id="effects-model">
+// Pure, deterministic effect plan. No DOM, images or per-frame JavaScript simulation.
+const WeldingEffects = (() => {
+  function random(seed) { let n = seed >>> 0; return () => { n = (1664525 * n + 1013904223) >>> 0; return n / 4294967296; }; }
+  function point(vx, vy, t, drag = 1.8, gravity = 1050) {
+    const decay = (1 - Math.exp(-drag * t)) / drag;
+    return { x: vx * decay, y: (vy - gravity / drag) * decay + gravity / drag * t };
+  }
+  function create(height, durationMs, seed) {
+    const rng = random(seed), seconds = durationMs / 1000;
+    const count = Math.max(64, Math.min(144, Math.round(seconds * 110)));
+    const sparks = [];
+    for (let i = 0; i < count; i++) {
+      const fraction = .02 + .86 * (i + rng()) / count;
+      const birth = fraction * durationMs;
+      const life = Math.min(240 + rng() * 380, durationMs + 200 - birth);
+      const vx = (i % 2 ? 1 : -1) * (260 + rng() * 520), vy = -280 + rng() * 440;
+      const frames = [];
+      for (let j = 0; j <= 12; j++) {
+        const u = j / 12, t = u * life / 1000, p = point(vx, vy, t);
+        const vertical = 1050 / 1.8 + (vy - 1050 / 1.8) * Math.exp(-1.8 * t);
+        const angle = Math.atan2(vertical, vx * Math.exp(-1.8 * t)) * 180 / Math.PI;
+        frames.push({ offset: u, transform: 'translate(' + p.x.toFixed(2) + 'px,' + p.y.toFixed(2) + 'px) rotate(' + angle.toFixed(1) + 'deg)', opacity: j === 0 || j === 12 ? 0 : Math.pow(1 - u, 1.35), backgroundColor: u < .2 ? '#fff7d2' : u < .6 ? '#ffc061' : '#ff722b' });
+      }
+      sparks.push({ birth, life, y: height * (1 - fraction), vx, vy, length: 3 + rng() * 6, frames });
+    }
+    const arcs = [];
+    const countArcs = Math.max(6, Math.min(11, Math.round(seconds * 9)));
+    for (let i = 0; i < countArcs; i++) {
+      const fraction = .07 + i / countArcs * .84;
+      const path = [[62, 148]];
+      for (let j = 1; j < 10; j++) path.push([62 + (rng() - .5) * 34, 148 - j * 14]);
+      path.push([62, 3]);
+      const a = path[3], b = path[6];
+      const branches = [path, [a, [a[0] - 18, a[1] - 7], [a[0] - 36, a[1] + 2], [6, a[1] - 20]], [b, [b[0] + 19, b[1] - 12], [b[0] + 33, b[1] - 6], [118, b[1] - 26]]];
+      arcs.push({ birth: fraction * durationMs, y: height * (1 - fraction), paths: branches.map(points => points.map(p => p.map(v => v.toFixed(1)).join(',')).join(' ')), life: 150 + rng() * 55 });
+    }
+    return { sparks, arcs, tailMaxMs: 200, direction: 'up' };
+  }
+  return { point, create };
+})();
+</script>
+
+<script id="demo-controller">
+(() => {
+  const frame = document.getElementById('frame'), handle = document.getElementById('handle');
+  const metrics = document.getElementById('metrics');
+  const duration = document.getElementById('duration');
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+  let preference = 420, generation = 0, drag = null, active = null;
+  const motionMs = 360;
+  function readFrame() {
+    const r = frame.getBoundingClientRect();
+    return { left: r.left, width: r.width, height: r.height };
+  }
+  function forPreference(box, value) { return GeometryModel.plan(box, box.left + box.width - value); }
+  function applyPlan(plan) {
+    frame.style.gridTemplateColumns = plan.grid;
+    handle.style.left = plan.dividerX + 'px';
+    handle.disabled = !plan.canResize;
+    handle.style.visibility = plan.canResize ? '' : 'hidden';
+    frame.querySelector('.sidebar').style.visibility = plan.columns.sidebar === 0 ? 'hidden' : '';
+  }
+  function clearActive() {
+    if (!active) return;
+    active.gate.cancel();
+    active.animations.forEach(animation => animation.cancel());
+    active.layer?.remove();
+    active.guide?.remove();
+    active = null;
+    frame.removeAttribute('data-busy');
+  }
+  function cancel() {
+    generation++;
+    if (drag && handle.hasPointerCapture(drag.pointerId)) handle.releasePointerCapture(drag.pointerId);
+    drag?.guide.remove(); drag = null;
+    clearActive();
+    applyPlan(forPreference(readFrame(), preference));
+  }
+  function scan(box, x, color, ms, transaction) {
+    const layer = document.createElement('div'); layer.className = 'effects'; layer.style.color = color;
+    const core = document.createElement('div'); core.className = 'scanCore'; layer.appendChild(core);
+    const beam = document.createElement('div'); beam.className = 'beam'; beam.style.left = x + 'px';
+    const tip = document.createElement('div'); tip.className = 'tip'; tip.style.left = x + 'px';
+    core.append(beam, tip); frame.appendChild(layer); transaction.layer = layer; transaction.core = core;
+    if (reduced.matches || typeof beam.animate !== 'function') {
+      tip.hidden = true;
+      return new Promise(resolve => setTimeout(resolve, ms));
+    }
+    const beamAnimation = beam.animate([{clipPath:'inset(100% 0 0 0)'},{clipPath:'inset(0)'}], {duration:ms,fill:'forwards',easing:'linear'});
+    const headAnimation = tip.animate([{transform:'translateY(' + (box.height - 6) + 'px)'},{transform:'translateY(0px)'}], {duration:ms,fill:'forwards',easing:'linear'});
+    transaction.animations.push(beamAnimation, headAnimation);
+    const plan = WeldingEffects.create(box.height, ms, Math.round(x * 97 + box.height));
+    for (const item of plan.sparks) {
+      const spark = document.createElement('i'); spark.className = 'spark';
+      spark.style.left = x + 'px'; spark.style.top = item.y + 'px'; spark.style.width = item.length + 'px'; spark.style.height = '1.6px';
+      layer.appendChild(spark);
+      transaction.animations.push(spark.animate(item.frames, {duration:item.life,delay:item.birth,fill:'both',easing:'linear'}));
+    }
+    for (const item of plan.arcs) {
+      const svg = document.createElementNS('http://www.w3.org/2000/svg','svg');
+      svg.setAttribute('class','arcBurst'); svg.setAttribute('viewBox','0 0 124 154'); svg.setAttribute('aria-hidden','true');
+      svg.style.left = (x - 62) + 'px'; svg.style.top = (item.y - 3) + 'px';
+      for (const points of item.paths) for (const className of ['arcGlow','arcMid','arcCore']) {
+        const path = document.createElementNS('http://www.w3.org/2000/svg','polyline'); path.setAttribute('points',points); path.setAttribute('class',className); svg.appendChild(path);
+      }
+      core.appendChild(svg);
+      transaction.animations.push(svg.animate([{opacity:0},{opacity:1,offset:.08},{opacity:.18,offset:.3},{opacity:.88,offset:.47},{opacity:0}], {duration:item.life,delay:item.birth,fill:'both'}));
+    }
+    return beamAnimation.finished.catch(() => {});
+  }
+  function animatePlan(plan, old, transaction, token) {
+    if (token !== generation || active !== transaction) return;
+    transaction.core?.remove();
+    const start = performance.now();
+    // Actual geometry animation. Content is neither transformed nor replaced.
+    const animations = reduced.matches || typeof frame.animate !== 'function' ? [] : [
+      frame.animate([{gridTemplateColumns:old.grid},{gridTemplateColumns:plan.grid}], {duration:motionMs,easing:'cubic-bezier(.2,.7,.2,1)'}),
+      handle.animate([{left:old.dividerX + 'px'},{left:plan.dividerX + 'px'}], {duration:motionMs,easing:'cubic-bezier(.2,.7,.2,1)'})
+    ];
+    transaction.animations.push(...animations);
+    preference = plan.preference; applyPlan(plan);
+    metrics.textContent = `Линия завершена → движение. Предрасчёт ${transaction.computeMs.toFixed(2)} мс; целевая панель ${plan.columns.rightbar.toFixed(1)} px.\n${transaction.planInfo || 'Внутренний текст раскладывает браузер во время изменения ширины.'}`;
+    Promise.allSettled(animations.map(a => a.finished)).then(() => {
+      if (token !== generation || active !== transaction) return;
+      clearActive();
+      metrics.textContent += `\nЗавершено: этап движения ${Math.round(performance.now() - start)} мс. Это замер макета, не DSH.`;
+    });
+  }
+  function prepare(box, desired) {
+    const token = ++generation, old = forPreference(box, preference);
+    const clamped = forPreference(box, desired), color = desired > preference ? '#4d6bfe' : '#e5484d';
+    frame.setAttribute('data-busy','');
+    const transaction = { animations: [], layer: null, computeMs: 0, planInfo: '' };
+    transaction.gate = GeometryModel.gate(plan => animatePlan(plan, old, transaction, token));
+    active = transaction;
+    metrics.textContent = 'Идёт вертикальная линия. Видимая сетка ещё прежняя; выполняется предрасчёт.';
+    const scanPromise = scan(box, clamped.dividerX, color, Number(duration.value) * 1000, transaction);
+    scanPromise.then(() => {
+      if (token !== generation || active !== transaction) return;
+      transaction.core?.remove();
+      transaction.gate.scanEnded();
+    });
+    // Let the line start painting before doing optional browser layout work.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (token !== generation || active !== transaction) return;
+      const start = performance.now();
+      const plan = forPreference(box, desired);
+      transaction.computeMs = performance.now() - start;
+      transaction.gate.prepared(plan);
+      if (!transaction.gate.state().scanEnded) metrics.textContent = `Предрасчёт готов за ${transaction.computeMs.toFixed(2)} мс. Ожидаем конец линии; сетка ещё прежняя.\n${transaction.planInfo}`;
+    }));
+  }
+  handle.addEventListener('pointerdown', event => {
+    if (event.button !== 0 || active || drag) return;
+    event.preventDefault();
+    const box = readFrame();
+    const old = forPreference(box, preference);
+    const guide = document.createElement('div'); guide.className = 'guide'; guide.style.left = old.dividerX + 'px';
+    guide.style.color = guide.style.background = '#4d6bfe'; frame.appendChild(guide);
+    drag = { box, old, pointerId: event.pointerId, startX: event.clientX, desired: preference, guide };
+    handle.setPointerCapture(event.pointerId); frame.setAttribute('data-busy','');
+  });
+  handle.addEventListener('pointermove', event => {
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    drag.desired = preference - (event.clientX - drag.startX);
+    const next = forPreference(drag.box, drag.desired);
+    drag.guide.style.left = next.dividerX + 'px';
+    drag.guide.style.background = drag.guide.style.color = drag.desired > preference ? '#4d6bfe' : '#e5484d';
+  });
+  handle.addEventListener('pointerup', event => {
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    const ended = drag; drag = null;
+    ended.guide.remove();
+    if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+    const desired = preference - (event.clientX - ended.startX);
+    prepare(ended.box, desired);
+  });
+  handle.addEventListener('pointercancel', event => { if (drag?.pointerId === event.pointerId) cancel(); });
+  handle.addEventListener('lostpointercapture', event => { if (drag?.pointerId === event.pointerId) cancel(); });
+  handle.addEventListener('keydown', event => {
+    if (active || drag || !['ArrowLeft','ArrowRight'].includes(event.key)) return;
+    event.preventDefault(); prepare(readFrame(), preference + (event.key === 'ArrowLeft' ? 80 : -80));
+  });
+  window.addEventListener('blur', cancel);
+  window.addEventListener('resize', () => { cancel(); metrics.textContent = 'Размер окна изменён: старый план отменён. Перетащите разделитель снова.'; });
+  document.getElementById('reset').addEventListener('click', () => { cancel(); preference = 420; applyPlan(forPreference(readFrame(), preference)); metrics.textContent = 'Сброшено. Перетащите разделитель.'; });
+  duration.addEventListener('input', () => { document.getElementById('durationValue').value = duration.value + ' с'; });
+  applyPlan(forPreference(readFrame(), preference));
+})();
+</script>
+</html>

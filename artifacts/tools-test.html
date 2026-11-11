@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Artifact tools smoke test</title>
+<style>
+  body { font: 14px/1.5 ui-sans-serif, system-ui, sans-serif; margin: 24px; color: #1d1d1f; }
+  button, input { font: inherit; padding: 6px 10px; margin: 4px 4px 4px 0; }
+  #out { margin-top: 12px; padding: 8px 10px; border: 1px solid #ddd; border-radius: 8px; }
+</style>
+</head>
+<body>
+  <h1 id="title">Artifact tools smoke test</h1>
+  <p id="hint">Кнопка и поле для проверки dsh_artifact_query/act/navigate/wait.</p>
+  <label for="name">Имя</label>
+  <input id="name" name="name" type="text" placeholder="Введите имя">
+  <button id="apply" type="button">Применить</button>
+  <button id="submit" type="button">Отправить</button>
+  <div id="out" data-state="idle">idle</div>
+  <script>
+    (function () {
+      var out = document.getElementById('out');
+      document.getElementById('apply').addEventListener('click', function () {
+        out.setAttribute('data-state', 'applied');
+        out.textContent = 'applied:' + (document.getElementById('name').value || '');
+      });
+      document.getElementById('submit').addEventListener('click', function () {
+        out.setAttribute('data-state', 'submitted');
+        out.textContent = 'submitted';
+      });
+    })();
+  </script>
+</body>
+</html>

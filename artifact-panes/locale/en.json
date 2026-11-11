@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Artifact Panes",
+    "description": "Renders workspace HTML artifacts in the native right Sidebar via a sandboxed iframe, with automatic refresh when the file changes."
+  }
+}

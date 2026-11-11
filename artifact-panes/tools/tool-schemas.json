@@ -1,0 +1,641 @@
+{
+  "version": 1,
+  "limits": {
+    "bytes": 65536,
+    "captureBytes": 1500000,
+    "inputBytes": 16384,
+    "text": 4096,
+    "nodes": 50,
+    "selector": 256,
+    "timeout": 15000,
+    "queue": 32,
+    "heartbeat": 6000
+  },
+  "tools": [
+    {
+      "name": "dsh_artifact_list",
+      "description": "List HTML artifacts of the current session.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "number"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "dsh_artifact_open",
+      "description": "Open an artifact in the right panel without taking system focus.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "placement": {
+            "type": "string",
+            "enum": [
+              "current",
+              "new"
+            ]
+          },
+          "reload": {
+            "type": "boolean"
+          },
+          "focus": {
+            "type": "boolean"
+          },
+          "selector": {
+            "type": "string"
+          },
+          "hash": {
+            "type": "string"
+          },
+          "scroll": {
+            "type": "object",
+            "properties": {
+              "x": {
+                "type": "number"
+              },
+              "y": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "x",
+              "y"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "dsh_artifact_tabs",
+      "description": "Artifact tabs of the current session.",
+      "input": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "dsh_artifact_close",
+      "description": "Close just this artifact tab.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "object",
+            "properties": {
+              "tabId": {
+                "type": "string"
+              },
+              "documentId": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "tabId",
+              "documentId"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "dsh_artifact_navigate",
+      "description": "Scroll or navigate inside an artifact.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "object",
+            "properties": {
+              "tabId": {
+                "type": "string"
+              },
+              "documentId": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "tabId",
+              "documentId"
+            ],
+            "additionalProperties": false
+          },
+          "selector": {
+            "type": "string"
+          },
+          "hash": {
+            "type": "string"
+          },
+          "scroll": {
+            "type": "object",
+            "properties": {
+              "x": {
+                "type": "number"
+              },
+              "y": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "x",
+              "y"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "dsh_artifact_query",
+      "description": "Bounded DOM query inside an artifact; secret fields are excluded.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "object",
+            "properties": {
+              "tabId": {
+                "type": "string"
+              },
+              "documentId": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "tabId",
+              "documentId"
+            ],
+            "additionalProperties": false
+          },
+          "selector": {
+            "type": "string"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "text",
+                "attrs",
+                "rect",
+                "style"
+              ]
+            }
+          },
+          "limit": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "target",
+          "selector"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "dsh_artifact_act",
+      "description": "Perform an action inside an artifact. Do not repeat an action with an unknown result.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "object",
+            "properties": {
+              "tabId": {
+                "type": "string"
+              },
+              "documentId": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "tabId",
+              "documentId"
+            ],
+            "additionalProperties": false
+          },
+          "action": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "click",
+                    "type": "string"
+                  },
+                  "selector": {
+                    "type": "string"
+                  },
+                  "submit": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "selector"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "type",
+                    "type": "string"
+                  },
+                  "selector": {
+                    "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "replace",
+                      "append"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "selector",
+                  "text"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "select",
+                    "type": "string"
+                  },
+                  "selector": {
+                    "type": "string"
+                  },
+                  "values": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "kind",
+                  "selector",
+                  "values"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "focus",
+                    "type": "string"
+                  },
+                  "selector": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "selector"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "press",
+                    "type": "string"
+                  },
+                  "selector": {
+                    "type": "string"
+                  },
+                  "key": {
+                    "type": "string",
+                    "enum": [
+                      "Enter",
+                      " ",
+                      "Escape",
+                      "ArrowUp",
+                      "ArrowDown",
+                      "ArrowLeft",
+                      "ArrowRight",
+                      "Home",
+                      "End",
+                      "PageUp",
+                      "PageDown"
+                    ]
+                  },
+                  "submit": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "selector",
+                  "key"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "scroll",
+                    "type": "string"
+                  },
+                  "selector": {
+                    "type": "string"
+                  },
+                  "x": {
+                    "type": "number"
+                  },
+                  "y": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "selector",
+                  "x",
+                  "y"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "required": [
+          "target",
+          "action"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "dsh_artifact_wait",
+      "description": "Wait inside an artifact for a bounded time.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "object",
+            "properties": {
+              "tabId": {
+                "type": "string"
+              },
+              "documentId": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "tabId",
+              "documentId"
+            ],
+            "additionalProperties": false
+          },
+          "selector": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "present",
+              "absent"
+            ]
+          },
+          "timeMs": {
+            "type": "number"
+          },
+          "timeoutMs": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "dsh_artifact_screenshot",
+      "description": "Screenshot of the artifact area only; unavailable without a safe provider.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "object",
+            "properties": {
+              "tabId": {
+                "type": "string"
+              },
+              "documentId": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "tabId",
+              "documentId"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "dsh_ui_panel_tabs",
+      "description": "Right panel metadata; no terminal contents or unrelated files.",
+      "input": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "dsh_ui_panel_open",
+      "description": "Open an allowed right-panel tab; never runs terminal commands.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "artifact",
+              "files",
+              "browser",
+              "terminal"
+            ]
+          },
+          "path": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "focus": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "output": {
+    "type": "object",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      },
+      "commandId": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "context": {
+        "type": "object",
+        "properties": {
+          "sessionId": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tabId": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "documentId": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "path": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId",
+          "tabId",
+          "documentId",
+          "path",
+          "kind"
+        ],
+        "additionalProperties": false
+      },
+      "effect": {
+        "type": "string",
+        "enum": [
+          "none",
+          "applied",
+          "unknown"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": true
+      },
+      "error": {
+        "oneOf": [
+          {
+            "type": "null"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    "required": [
+      "ok",
+      "commandId",
+      "context",
+      "effect",
+      "data",
+      "error"
+    ],
+    "additionalProperties": false
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "generator": "tools/codex-worker/build-tools-v1.mjs",
+  "files": [
+    {
+      "name": "contracts.js",
+      "bytes": 11024,
+      "sha256": "aa450e606e9477a1813efb9985c4f46624e373936df44e5fe57f16c539191c33"
+    },
+    {
+      "name": "bridge.js",
+      "bytes": 9054,
+      "sha256": "5c6aff2a504d7ae6b8423efb2b6c790a1dacfa009068b8406cebf3b5d50affb4"
+    },
+    {
+      "name": "host.js",
+      "bytes": 10691,
+      "sha256": "63deec4b408352228e89eeb92920d3d62589d39fa4195cfaa967a6e019a94cb6"
+    },
+    {
+      "name": "iframe.js",
+      "bytes": 13249,
+      "sha256": "8da8ab58494b0a32443b1e92892523e63718cdec89a2be0fed7ffe35bdeade7d"
+    },
+    {
+      "name": "client.js",
+      "bytes": 17637,
+      "sha256": "36530105ee3693ba2c41080b502aaf61c0a51f13f392a6e8a4bef86ee92b7faf"
+    },
+    {
+      "name": "capture.js",
+      "bytes": 2047,
+      "sha256": "345c5b4aff875bffe18fd11847c67014fa359e1b154d97857670c6568f6831b3"
+    },
+    {
+      "name": "coordinator.js",
+      "bytes": 2761,
+      "sha256": "1343476e3cb8bc196de564bb35a8206f975753aa07d8220b71d9954963a0af3f"
+    },
+    {
+      "name": "iframe-dispatcher.js",
+      "bytes": 24200,
+      "sha256": "abde770e252efe8a730235c85561a0b06ad66ae043526c4b3018efdb5671ec69"
+    },
+    {
+      "name": "client-bundle.js",
+      "bytes": 33240,
+      "sha256": "f2f183e6eb7b0e68cf44c552bf8c90a9bb1c24a8770cef477cca8e4391fe75a4"
+    },
+    {
+      "name": "integration-fragments.txt",
+      "bytes": 57833,
+      "sha256": "37ad2574ba3c641888611a2c2c74d92549de64debf0609dc9c0ca345d8f9dd75"
+    },
+    {
+      "name": "tool-schemas.json",
+      "bytes": 15168,
+      "sha256": "388e0854379d7a7f44f36b1efebc069800f886bf7cfb3aaee7e2a207fd5b4902"
+    }
+  ]
+}

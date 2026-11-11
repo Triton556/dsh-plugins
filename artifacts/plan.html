@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DSH · План оптимизации по образцу Claude</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#151922; --panel2:#1b2130; --line:#262d3d;
+    --ink:#e6e9f0; --dim:#9aa4b8; --dim2:#6f7a90;
+    --accent:#7aa2ff; --ok:#4ade80; --warn:#fbbf24; --bad:#f87171; --violet:#a78bfa;
+    --mono:ui-monospace,SFMono-Regular,"JetBrains Mono",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:1120px;margin:0 auto;padding:28px 22px 80px}
+  header{display:flex;flex-direction:column;gap:8px;margin-bottom:22px}
+  h1{font-size:22px;margin:0;letter-spacing:-.01em}
+  h2{font-size:16px;margin:30px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:14px;margin:18px 0 8px;color:var(--ink)}
+  .sub{color:var(--dim);font-size:13px}
+  .grid{display:grid;gap:12px}
+  .g2{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+  .card h3{margin-top:0}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin:8px 0 4px}
+  th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--dim);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  tr:last-child td{border-bottom:none}
+  code{font-family:var(--mono);font-size:12px;background:#0b0e14;border:1px solid var(--line);
+    border-radius:5px;padding:1px 5px;color:#c9d6ff}
+  pre{font-family:var(--mono);font-size:12px;background:#0b0e14;border:1px solid var(--line);
+    border-radius:10px;padding:12px 14px;overflow:auto;color:#c9d6ff;margin:8px 0}
+  .tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:999px;
+    border:1px solid var(--line);color:var(--dim);background:var(--panel2);white-space:nowrap}
+  .tag.ok{color:var(--ok);border-color:#1f4b31;background:#10231a}
+  .tag.warn{color:var(--warn);border-color:#4a3a12;background:#231d0f}
+  .tag.bad{color:var(--bad);border-color:#4a1f1f;background:#231012}
+  .tag.go{color:var(--accent);border-color:#22344f;background:#0f1a2b}
+  .metric{display:flex;gap:14px;flex-wrap:wrap}
+  .metric div{background:var(--panel2);border:1px solid var(--line);border-radius:10px;
+    padding:8px 12px;min-width:132px}
+  .metric b{display:block;font-size:18px;font-weight:600}
+  .metric span{color:var(--dim);font-size:12px}
+  ul{margin:6px 0 6px 18px;padding:0}
+  li{margin:3px 0}
+  .q{color:var(--violet)}
+  .legend{font-size:12px;color:var(--dim2);margin-top:6px}
+  .seq{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:10px 0 4px}
+  .seq .step{background:var(--panel2);border:1px solid var(--line);border-radius:8px;
+    padding:6px 10px;font-size:12px}
+  .seq .arrow{color:var(--dim2)}
+  .kbd{font-family:var(--mono);font-size:11px;border:1px solid var(--line);
+    border-bottom-width:2px;border-radius:5px;padding:0 4px;background:#0b0e14}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>План оптимизации GUI DSH по образцу Claude</h1>
+  <div class="sub">Собрано 2026-11-10 · evidence из <code>app.asar</code> Claude 4.23118.1 · метрики — self-test дивидера</div>
+  <div class="legend">Пометки: <span class="tag ok">код</span> прочитано в исходниках ·
+    <span class="tag">наблюдение</span> видно в UI · <span class="tag go">замер</span> измерено ·
+    <span class="q">вопрос</span> не подтверждено</div>
+</header>
+
+<h2>1. Что делает Claude иначе</h2>
+<div class="grid g2">
+  <div class="card">
+    <h3>Нативные слои вместо HTML</h3>
+    <p class="sub">claude.ai живёт в отдельном <code>WebContentsView</code>, панель и артефакты — тоже нативные view.</p>
+    <pre>H = new WebContentsView({ webPreferences:{ sandbox:true,
+        contextIsolation:true, nodeIntegration:false }})
+contentView.addChildView(panelView)
+panelView.setBounds({ x, y, width, height })</pre>
+    <p class="sub">Ресайз = смена границ слоя. Shell-HTML не переобтекает вообще.</p>
+  </div>
+  <div class="card">
+    <h3>Ресайз без анимации, одна переменная</h3>
+    <pre>function bK(el, px){
+  el?.style.setProperty("--session-panel-w", px + "px")
+}
+onPointerMove: bK(panelRef.current, clamp(width))
+onPointerUp:   dirty &amp;&amp; onCommit(width)   // React — только тут</pre>
+    <p class="sub">Клэмпы <code>340 … min(720, 75%·(innerWidth−sidebar))</code>, dirty-порог 3 px,
+      двойной клик → 340, стрелки ±8 / Shift ±32.</p>
+  </div>
+</div>
+
+<h2>2. Почему у нас дёргается</h2>
+<div class="card">
+  <table>
+    <tr><th>Что</th><th>Сейчас</th><th>У Claude</th><th>Следствие</th></tr>
+    <tr><td>Ширина панели</td><td>WAAPI-анимация 380 мс по <code>grid-template-columns</code> + <code>width</code> + <code>left</code></td><td>прямая запись одной CSS-переменной</td><td>три layout-инвалидатора на кадр</td></tr>
+    <tr><td>Колонка чата</td><td>резиновая <code>1fr</code> — переобтекает каждый кадр</td><td>контент в ограниченной центрированной колонке</td><td>пере-шейпинг текста + перерисовка</td></tr>
+    <tr><td>Контент панели</td><td><code>&lt;iframe&gt;</code> ресайзится покадрово</td><td>нативный view, <code>setBounds</code></td><td>медиа перезапускается</td></tr>
+    <tr><td>Молния (250 искр)</td><td><span class="tag ok">canvas</span> + слой по колонке</td><td>—</td><td>перестала влиять: сборка 1–2 мс</td></tr>
+  </table>
+  <div class="metric" style="margin-top:10px">
+    <div><b>200–400 мс</b><span>render на кадр при драге</span></div>
+    <div><b>4–10</b><span>кадров за драг</span></div>
+    <div><b>100–600 мс</b><span>gap между кадрами</span></div>
+    <div><b>1–5 мс</b><span>layout (дёшево!)</span></div>
+  </div>
+  <p class="sub" style="margin-top:8px">То есть дорогая не раскладка, а перерисовка. Эффект молнии после перевода на canvas перестал быть фактором — проверено A/B.</p>
+</div>
+
+<h2>3. Стори и порядок</h2>
+<div class="seq">
+  <span class="step"><span class="tag ok">S0</span> инструменты</span><span class="arrow">→</span>
+  <span class="step"><span class="tag go">S1</span> дивидер</span><span class="arrow">→</span>
+  <span class="step">S2 чат</span><span class="arrow">→</span>
+  <span class="step">S3 артефакты</span><span class="arrow">→</span>
+  <span class="step">S4 регрессии</span><span class="arrow">→</span>
+  <span class="step">S5 vision-QA</span>
+</div>
+
+<div class="grid g2" style="margin-top:12px">
+  <div class="card">
+    <h3><span class="tag ok">S0</span> Инструменты <span class="tag ok">закрыто</span></h3>
+    <ul>
+      <li>CUA: окна, вкладки Chrome, фокус, скриншот, клик, драг, ввод</li>
+      <li>чтение <code>app.asar</code> любого Electron-пакета</li>
+      <li>vision проверен — скриншоты читаются</li>
+      <li>self-test драга из скрипта</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3><span class="tag go">S1</span> Дивидер без анимации</h3>
+    <ul>
+      <li>убрать WAAPI-motion</li>
+      <li>одна переменная <code>--dsh-panel-w</code>, запись на <code>pointermove</code></li>
+      <li>grid/панель/ручка — через <code>calc()</code></li>
+      <li>коммит на <code>pointerup</code></li>
+      <li>клэмпы, dblclick, стрелки — как у Claude</li>
+    </ul>
+    <p class="sub"><b>Ожидание:</b> медиана кадра ≤ 33 мс, p95 ≤ 50 мс.</p>
+  </div>
+  <div class="card">
+    <h3>S2 Чат не переобтекает</h3>
+    <ul>
+      <li>контентная колонка с <code>max-width</code></li>
+      <li>во время драга — клип контейнера, внутренняя ширина фиксируется</li>
+      <li>один reflow после отпускания</li>
+    </ul>
+    <p class="sub"><b>Ожидание:</b> <code>layout</code> ≤ 5 мс, <code>render</code> ≤ 16 мс.</p>
+  </div>
+  <div class="card">
+    <h3>S3 Артефакты вне рефлоу</h3>
+    <ul>
+      <li><code>contain: paint</code> только на контейнере панели</li>
+      <li>iframe не меняет размер во время драга</li>
+      <li>проверка: mp4 не перезапускается</li>
+    </ul>
+    <p class="sub"><b>Ожидание:</b> нет кадров &gt; 50 мс, видео играет дальше.</p>
+  </div>
+</div>
+
+<h2>4. Требования</h2>
+<div class="grid g2">
+  <div class="card">
+    <h3>Функциональные</h3>
+    <table>
+      <tr><th>ID</th><th>Требование</th></tr>
+      <tr><td>F1</td><td>ширина панели следует за курсором 1:1 (±2 px)</td></tr>
+      <tr><td>F2</td><td>клэмп 340 … min(720, 75%·(innerWidth−sidebar))</td></tr>
+      <tr><td>F3</td><td>двойной клик → 340 px</td></tr>
+      <tr><td>F4</td><td>←/→ ±8, Shift ±32, Home 340, End max</td></tr>
+      <tr><td>F5</td><td>ширина сохраняется между запусками</td></tr>
+      <tr><td>F6</td><td>Esc/blur/resize отменяют драг без прыжка</td></tr>
+      <tr><td>F7</td><td>молния на отпускании не влияет на движение</td></tr>
+      <tr><td>F8</td><td>текст чата не пере-шейпится покадрово</td></tr>
+      <tr><td>F9</td><td>артефакт и видео не перезапускаются</td></tr>
+      <tr><td>F10</td><td>профайлер по требованию: было/стало</td></tr>
+    </table>
+  </div>
+  <div class="card">
+    <h3>Пороги (N)</h3>
+    <table>
+      <tr><th>ID</th><th>Метрика</th><th>Порог</th></tr>
+      <tr><td>N1</td><td>медиана gap</td><td>≤ 33 мс</td></tr>
+      <tr><td>N2</td><td>p95 gap</td><td>≤ 50 мс</td></tr>
+      <tr><td>N3</td><td>кадры &gt; 100 мс</td><td>0</td></tr>
+      <tr><td>N4</td><td>layout/кадр</td><td>≤ 5 мс</td></tr>
+      <tr><td>N5</td><td>render/кадр</td><td>≤ 16 мс</td></tr>
+      <tr><td>N6</td><td>кадр коммита</td><td>≤ 100 мс</td></tr>
+      <tr><td>N7</td><td>залипшие анимации/стили</td><td>0</td></tr>
+    </table>
+    <h3 style="margin-top:14px">Запрещено</h3>
+    <ul>
+      <li><code>content-visibility</code> на чате — ломает виртуализацию</li>
+      <li><code>contain: paint</code> на транскрипте</li>
+      <li>глобальные <code>*</code>-стили на время драга</li>
+    </ul>
+  </div>
+</div>
+
+<h2>5. Открытые вопросы</h2>
+<div class="card">
+  <ul>
+    <li><span class="q">?</span> Виртуализация и стриминг в claude.ai — код удалённый, закрывается DevTools на самом webview (или CDP-трейс).</li>
+    <li><span class="q">?</span> Точная ширина контентной колонки (px/rem) и поведение на узких окнах.</li>
+    <li><span class="q">?</span> Как у Claude не перезапускается медиа при ресайзе панели.</li>
+  </ul>
+</div>
+
+<h2>6. Следующий шаг</h2>
+<div class="card">
+  <p>Правка <code>artifact-panes/client.js</code>: дивидер по модели Claude — одна CSS-переменная,
+    запись на <code>pointermove</code>, без WAAPI, коммит на отпускании, клавиатура как у них.
+    Применяется через HMR, без перезапуска приложения.</p>
+  <p class="sub">После — 5 прогонов self-test и таблица «было/стало» по N1–N3.</p>
+</div>
+
+</div>
+</body>
+</html>

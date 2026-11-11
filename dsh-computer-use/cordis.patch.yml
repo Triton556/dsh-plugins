@@ -1,0 +1,7 @@
+# dsh-computer-use bundle patch.
+#
+# Installed through the plugin manager (or a profile dependency link); the
+# profile boot merges this single insert row.
+- insert:
+    - id: computer-use
+      name: 'dsh-computer-use'

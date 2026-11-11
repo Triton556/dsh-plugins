@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Little Stones · обзор проекта</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f4ee;
+    --panel: #fffdf9;
+    --ink: #23211d;
+    --ink-soft: #5f5a51;
+    --line: #e4ded2;
+    --accent: #b3552b;
+    --accent-soft: #f3e2d6;
+    --stone: #6f7c86;
+    --stone-soft: #e7ecf0;
+    --ok: #3f7a55;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #191817;
+      --panel: #211f1d;
+      --ink: #ece7de;
+      --ink-soft: #a49d91;
+      --line: #35312c;
+      --accent: #e08a5f;
+      --accent-soft: #3a2a22;
+      --stone: #9fb0bd;
+      --stone-soft: #26303a;
+      --ok: #7fb08f;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 36px 24px 48px; }
+  header { display: flex; flex-direction: column; gap: 10px; padding-bottom: 22px; border-bottom: 1px solid var(--line); }
+  .eyebrow { font-size: 11px; letter-spacing: .18em; text-transform: uppercase; color: var(--accent); }
+  h1 { margin: 0; font-size: clamp(28px, 5vw, 40px); line-height: 1.08; letter-spacing: -0.02em; font-weight: 650; }
+  .lede { margin: 0; max-width: 62ch; color: var(--ink-soft); font-size: 15.5px; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+  .chip { font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--ink-soft); background: var(--panel); }
+  section { padding: 26px 0 6px; border-bottom: 1px solid var(--line); }
+  section:last-of-type { border-bottom: 0; }
+  h2 { margin: 0 0 14px; font-size: 13px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-soft); font-weight: 600; }
+  .grid { display: grid; gap: 12px; grid-template-columns: 1fr; }
+  @media (min-width: 620px) { .grid.two { grid-template-columns: 1fr 1fr; } .grid.four { grid-template-columns: repeat(4, 1fr); } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .card h3 { margin: 0 0 6px; font-size: 15px; font-weight: 600; }
+  .card p { margin: 0; font-size: 13.5px; color: var(--ink-soft); }
+  .pillar { border-left: 3px solid var(--accent); }
+  .loop { display: grid; gap: 10px; grid-template-columns: 1fr; counter-reset: step; }
+  @media (min-width: 760px) { .loop { grid-template-columns: repeat(5, 1fr); } }
+  .step { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 14px 12px; }
+  .step::before {
+    counter-increment: step; content: counter(step);
+    position: absolute; top: -9px; left: 12px;
+    width: 20px; height: 20px; border-radius: 50%;
+    background: var(--accent); color: #fff; font-size: 11px; font-weight: 600;
+    display: grid; place-items: center;
+  }
+  .step h3 { margin: 6px 0 4px; font-size: 14px; }
+  .step p { margin: 0; font-size: 12.5px; color: var(--ink-soft); }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); font-weight: 600; }
+  td:first-child { white-space: nowrap; font-weight: 600; }
+  .numbers { display: grid; gap: 12px; grid-template-columns: repeat(2, 1fr); }
+  @media (min-width: 620px) { .numbers { grid-template-columns: repeat(4, 1fr); } }
+  .num { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+  .num b { display: block; font-size: 24px; letter-spacing: -0.02em; }
+  .num span { font-size: 12px; color: var(--ink-soft); }
+  .timeline { display: flex; flex-wrap: wrap; gap: 8px; }
+  .milestone { flex: 1 1 150px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  .milestone b { display: block; font-size: 12px; color: var(--accent); letter-spacing: .06em; }
+  .milestone span { font-size: 13px; }
+  footer { padding-top: 18px; color: var(--ink-soft); font-size: 12px; }
+  .note { font-size: 12.5px; color: var(--ink-soft); margin-top: 10px; }
+  .status { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ok); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Project brief · 06.11.2026</div>
+    <h1>Little Stones</h1>
+    <p class="lede">RTS-песочница про поселение маленьких каменных человечков: днём строишь и добываешь, ночью защищаешь то, что построил. Ближе к Cataclismo, чем к колони-симу — смесь Minecraft и RTS с волнами и PvP.</p>
+    <div class="meta">
+      <span class="chip">Unity</span>
+      <span class="chip">PvE 2–4 игрока</span>
+      <span class="chip">PvP — веха M6</span>
+      <span class="chip">Ранний доступ после M5</span>
+      <span class="chip">Steam</span>
+    </div>
+  </header>
+
+  <section>
+    <h2>Опоры</h2>
+    <div class="grid four">
+      <div class="card pillar"><h3>Строишь — значит защищаешь</h3><p>Стены, перекрытия и обрушения — не декорация: без перевязки кладки стена стоит, но падает; падающие блоки бьют физически, по скорости.</p></div>
+      <div class="card pillar"><h3>Ночь опасна</h3><p>Волны приходят ночью; факелы и свет — часть обороны. День — на экономику, ночь — на проверку того, что успел построить.</p></div>
+      <div class="card pillar"><h3>Роль — это снаряжение</h3><p>Рабочий, рыцарь, лучник: меч и щит из железа, лук, инструменты в сумке открывают работу. Меняешь экипировку — меняешь роль.</p></div>
+      <div class="card pillar"><h3>Маленькие, но свои</h3><p>Поселение из LittleStone: рост через постройку, ремонт и замену. Игрок теряет не «юнита», а своего человечка.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Игровой день</h2>
+    <div class="loop">
+      <div class="step"><h3>Добыча</h3><p>Камень, дерево, руда. Переноска по правилам материала: крупное — по одному, сыпучее — в мешке, доски — по несколько.</p></div>
+      <div class="step"><h3>Стройка</h3><p>Простой режим: только приоритет, число работников задача меняет сама. Продвинутый — подменю с точной раздачей.</p></div>
+      <div class="step"><h3>Рост</h3><p>Новый LittleStone появляется в особой постройке. В ядре временно — кристалл как в оригинале; своё «что защищаем» — в лорном раунде.</p></div>
+      <div class="step"><h3>Оборона</h3><p>Ночные волны, факелы, ловушки из прогорающих досок, сбрасывающие блоки.</p></div>
+      <div class="step"><h3>Утро</h3><p>Считаем потери, чиним, достраиваем и готовимся к следующей ночи.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Роли и снаряжение</h2>
+    <table>
+      <thead><tr><th>Роль</th><th>Чем определяется</th><th>Что делает</th></tr></thead>
+      <tbody>
+        <tr><td>Рабочий</td><td>Инструменты в сумке</td><td>Добыча, переноска, стройка, ремонт</td></tr>
+        <tr><td>Рыцарь</td><td>Меч и щит (2 железа)</td><td>Держит линию у стены и ворот</td></tr>
+        <tr><td>Лучник</td><td>Лук</td><td>Стреляет со стен и с высоты</td></tr>
+      </tbody>
+    </table>
+    <p class="note">Роль — снаряжение, а не класс: экипировка меняется вместе с задачей. В первой версии три роли, расширение — после ядра.</p>
+  </section>
+
+  <section>
+    <h2>Масштаб — цель, не benchmark</h2>
+    <div class="numbers">
+      <div class="num"><b>150</b><span>LittleStone в поселении</span></div>
+      <div class="num"><b>100</b><span>врагов в волне</span></div>
+      <div class="num"><b>256×256×128</b><span>размер острова</span></div>
+      <div class="num"><b>60 FPS</b><span>средний ПК (≈6 ядер, GTX 1660)</span></div>
+    </div>
+    <p class="note">2–4 игрока в PvE. Steam Deck проверяем на вехе M4 — без обещаний.</p>
+  </section>
+
+  <section>
+    <h2>Путь к игрокам</h2>
+    <div class="timeline">
+      <div class="milestone"><b>M4</b><span>Демо для Next Fest; решение о краудфандинге или издателе</span></div>
+      <div class="milestone"><b>M5</b><span>Ранний доступ в Steam: ядро + PvE-кооператив</span></div>
+      <div class="milestone"><b>M6</b><span>PvP: подкоп под базу, катапульты — первое большое обновление</span></div>
+      <div class="milestone"><b>M12</b><span>История и новый контент обновлениями после выхода</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Где проект сейчас</h2>
+    <div class="grid two">
+      <div class="card"><h3>Прототип</h3><p>Механики и прототип собираются на готовых бесплатных ассетах (KayKit, Mixamo). Своя модель персонажа потом встаёт на место готовой через Humanoid-аватар и одинаковые имена клипов.</p></div>
+      <div class="card"><h3>Арт и звук</h3><p>Danil делает сам с ИИ и доводит руками: мудборд второй волны, листы глаз и эмоций LittleStone. Звук — встроенное аудио Unity через собственный слой игровых событий; FMOD и Wwise сравниваются на стенде.</p></div>
+    </div>
+    <p class="note">Данные основаны на личных заметках проекта от 30.10–05.11.2026. Счётчики задач меняются ежедневно — здесь только зафиксированные решения.</p>
+  </section>
+
+  <footer>
+    <span class="status"><span class="dot"></span>Артефакт живой: перезапишите файл — панель подхватит новую версию</span>
+  </footer>
+</div>
+</body>
+</html>

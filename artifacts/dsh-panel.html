@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DSH · панель плагинов</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --fg: #1b1b1a;
+    --muted: #6b6b66;
+    --line: #e8e6e1;
+    --fill: #1b1b1a;
+    --on-fill: #ffffff;
+    --hover: #f3f1ed;
+    --chip: #f3f1ed;
+    --ok: #2f7d4f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17181a;
+      --fg: #ecebe7;
+      --muted: #9a9a95;
+      --line: #2b2c2f;
+      --fill: #ecebe7;
+      --on-fill: #17181a;
+      --hover: #232427;
+      --chip: #232427;
+      --ok: #7fbf95;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 18px 20px 24px;
+    background: var(--bg);
+    color: var(--fg);
+    font: 14px/1.5 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+  .head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .stamp { font-size: 11px; color: var(--muted); }
+  .sub { margin: 3px 0 0; font-size: 12px; color: var(--muted); }
+
+  [role="tablist"] { display: flex; gap: 4px; margin-top: 14px; }
+  [role="tab"] {
+    appearance: none; border: 0; background: transparent; color: var(--muted);
+    font: inherit; font-size: 12px; padding: 6px 11px; border-radius: 7px; cursor: pointer;
+  }
+  [role="tab"]:hover { background: var(--hover); }
+  [role="tab"]:focus-visible { outline: 2px solid var(--muted); outline-offset: 1px; }
+  [role="tab"][aria-selected="true"] { background: var(--fill); color: var(--on-fill); }
+  [role="tabpanel"] { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 4px; }
+  [role="tabpanel"][hidden] { display: none; }
+
+  .item { padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .item:last-child { border-bottom: 0; }
+  .row1 { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .name { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12.5px; }
+  .ver { font-size: 11px; color: var(--muted); background: var(--chip); border-radius: 5px; padding: 1px 6px; }
+  .spacer { flex: 1 1 auto; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); display: inline-block; }
+  .state { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }
+  .desc { margin: 4px 0 0; font-size: 12.5px; color: var(--muted); }
+
+  dl { margin: 10px 0 0; }
+  .r { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .r:last-child { border-bottom: 0; }
+  dt { margin: 0; font-size: 13px; color: var(--muted); }
+  dd { margin: 0; font-size: 13px; text-align: right; }
+  .lead { margin: 10px 0 0; font-size: 13px; }
+  .note { margin: 8px 0 0; font-size: 12px; color: var(--muted); }
+  footer { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); }
+  code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; color: var(--fg); }
+</style>
+</head>
+<body>
+  <div class="head">
+    <h1>DSH · панель плагинов</h1>
+    <span class="stamp">профиль desktop</span>
+  </div>
+  <p class="sub">Что установлено, чем это грозит и какой режим включён.</p>
+
+  <div role="tablist" aria-label="Разделы">
+    <button role="tab" id="tab-p" aria-controls="panel-p" aria-selected="true" tabindex="0">Плагины</button>
+    <button role="tab" id="tab-r" aria-controls="panel-r" aria-selected="false" tabindex="-1">Разрешения</button>
+  </div>
+
+  <section role="tabpanel" id="panel-p" aria-labelledby="tab-p">
+    <div class="item">
+      <div class="row1">
+        <span class="name">dsh-claude-style</span>
+        <span class="ver">0.19.7</span>
+        <span class="spacer"></span>
+        <span class="state"><span class="dot"></span>активен</span>
+      </div>
+      <p class="desc">Тема Claude Code: палитры, маскот, меню моделей, стоимость сессии. Правит CSS всего интерфейса — самый инвазивный из трёх.</p>
+    </div>
+    <div class="item">
+      <div class="row1">
+        <span class="name">dsh-popout-sidebar</span>
+        <span class="ver">1.0.1</span>
+        <span class="spacer"></span>
+        <span class="state"><span class="dot"></span>активен</span>
+      </div>
+      <p class="desc">Правая панель: артефакты, файловое дерево, превью, вынос во вкладку. Единственное, что рендерит HTML прямо в приложении.</p>
+    </div>
+    <div class="item">
+      <div class="row1">
+        <span class="name">dsh-generative-ui</span>
+        <span class="ver">0.2.0</span>
+        <span class="spacer"></span>
+        <span class="state"><span class="dot"></span>активен</span>
+      </div>
+      <p class="desc">React-блоки в ответе. Инлайн работает; канвасы из <code>.ui4a.tsx</code> в этой сборке открываются как код.</p>
+    </div>
+  </section>
+
+  <section role="tabpanel" id="panel-r" aria-labelledby="tab-r" hidden>
+    <p class="lead">Сейчас включён <b>Full access</b>: песочницы нет, подтверждений нет.</p>
+    <dl>
+      <div class="r"><dt>Read Only</dt><dd>читать, но не писать</dd></div>
+      <div class="r"><dt>Workspace Write</dt><dd>писать в рабочей папке</dd></div>
+      <div class="r"><dt>Full access</dt><dd>писать везде, без вопросов</dd></div>
+      <div class="r"><dt>Auto review</dt><dd>полный доступ, но с ревьюером</dd></div>
+    </dl>
+    <p class="note">Переключение — <code>/permission</code> в композере или чип рядом с выбором модели.</p>
+  </section>
+
+  <footer>Файл: <code>artifacts/dsh-panel.html</code> · обновляется перезаписью файла, панель подхватывает сама.</footer>
+
+<script>
+  (function () {
+    var tabs = Array.prototype.slice.call(document.querySelectorAll('[role="tab"]'));
+    function select(index, focus) {
+      tabs.forEach(function (tab, i) {
+        var on = i === index;
+        tab.setAttribute('aria-selected', on ? 'true' : 'false');
+        tab.setAttribute('tabindex', on ? '0' : '-1');
+        document.getElementById(tab.getAttribute('aria-controls')).hidden = !on;
+      });
+      if (focus) tabs[index].focus();
+    }
+    tabs.forEach(function (tab, i) {
+      tab.addEventListener('click', function () { select(i, false); });
+      tab.addEventListener('keydown', function (event) {
+        var next = null;
+        if (event.key === 'ArrowRight') next = (i + 1) % tabs.length;
+        else if (event.key === 'ArrowLeft') next = (i - 1 + tabs.length) % tabs.length;
+        else if (event.key === 'Home') next = 0;
+        else if (event.key === 'End') next = tabs.length - 1;
+        if (next === null) return;
+        event.preventDefault();
+        select(next, true);
+      });
+    });
+  })();
+</script>
+</body>
+</html>

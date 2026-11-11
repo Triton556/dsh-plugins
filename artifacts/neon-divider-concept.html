@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Neon divider — vertical line concept</title>
+<style>
+  :root{
+    --bg:#f7f6f3;--surface:#fff;--surface-2:#fbfaf8;--text:#1d1d1f;--muted:#77736e;
+    --line:rgba(20,20,30,.12);--line-soft:rgba(20,20,30,.07);--blue:#4d6bfe;--red:#e5484d;
+    --cyan:#75ecff;--green:#1f9d74;--right-width:460px;
+    font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);overflow:hidden}
+  button,select,input{font:inherit}
+  .app{height:100%;display:flex;flex-direction:column}
+  .topbar{display:flex;align-items:center;gap:18px;padding:10px 18px;border-bottom:1px solid var(--line);
+    background:rgba(250,249,246,.9);backdrop-filter:blur(12px);z-index:4}
+  .brand{display:flex;align-items:center;gap:10px;min-width:220px}
+  .brand-mark{width:22px;height:22px;border-radius:7px;background:var(--blue);
+    box-shadow:0 0 0 1px rgba(77,107,254,.25),0 0 18px rgba(77,107,254,.45)}
+  .brand b{font-size:13px;letter-spacing:.01em;display:block}
+  .brand span{display:block;font-size:10px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase}
+  .controls{display:flex;align-items:center;gap:14px;flex:1;min-width:0;flex-wrap:wrap}
+  .group{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted)}
+  .seg{display:flex;background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:2px}
+  .seg button{border:0;background:transparent;color:var(--muted);font-size:11px;padding:4px 9px;border-radius:999px;cursor:pointer}
+  .seg button[data-on="true"]{background:var(--blue);color:#fff}
+  .range{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted)}
+  .range input{width:88px;accent-color:var(--blue)}
+  .range output{font-variant-numeric:tabular-nums;color:var(--text);min-width:36px;text-align:right}
+  .replay{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:5px 11px;font-size:11px;cursor:pointer}
+  .replay:hover{border-color:var(--blue);color:var(--blue)}
+  .status{margin-left:auto;font-size:11px;color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}
+  .workspace{position:relative;flex:1;min-height:0;display:flex;overflow:hidden;background:var(--bg)}
+  .chat{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;padding:0 18px}
+  .chat-head{display:flex;align-items:center;gap:8px;padding:13px 4px 8px;font-size:12px;color:var(--muted)}
+  .chat-head b{color:var(--text);font-weight:600}
+  .chat-scroll{flex:1;overflow:auto;padding:8px 4px 18px;max-width:860px;margin:0 auto;width:100%}
+  .msg{max-width:86%;margin:12px 0;padding:10px 13px;border-radius:13px;font-size:12.5px;line-height:1.55}
+  .msg.user{margin-left:auto;background:#e8eefc;border:1px solid rgba(77,107,254,.12)}
+  .msg.assistant{background:var(--surface);border:1px solid var(--line-soft)}
+  .msg h4{margin:0 0 6px;font-size:12px}
+  .msg ul{margin:5px 0 0;padding-left:18px}
+  .msg li{margin:3px 0}
+  .composer{max-width:860px;margin:0 auto;width:100%;background:var(--surface);border:1px solid var(--line);
+    border-radius:16px;padding:10px 12px 9px;display:flex;align-items:center;gap:10px;box-shadow:0 6px 22px rgba(20,20,30,.05);margin-bottom:16px}
+  .composer .ph{flex:1;color:var(--muted);font-size:12.5px}
+  .composer .send{width:28px;height:28px;border-radius:50%;background:var(--blue);color:#fff;display:grid;place-items:center;font-size:13px}
+  .right{flex:0 0 var(--right-width);width:var(--right-width);min-width:0;background:var(--surface-2);
+    border-left:1px solid var(--line);display:flex;flex-direction:column;overflow:hidden}
+  .right-tabs{display:flex;align-items:center;gap:6px;padding:9px 10px;border-bottom:1px solid var(--line);font-size:11px;color:var(--muted)}
+  .right-tab{padding:4px 8px;border-radius:7px;background:var(--surface);border:1px solid var(--line);color:var(--text)}
+  .right-pane{flex:1;overflow:auto;padding:16px 16px 24px}
+  .kicker{font-size:9px;letter-spacing:.13em;text-transform:uppercase;color:var(--muted)}
+  .right h2{margin:6px 0 6px;font-size:19px;line-height:1.2;letter-spacing:-.02em}
+  .right p{margin:0 0 12px;font-size:11.5px;line-height:1.55;color:var(--muted)}
+  .card{border:1px solid var(--line);border-radius:12px;background:var(--surface);padding:10px;margin:10px 0}
+  .card h3{margin:0 0 3px;font-size:12px}
+  .card .hint{font-size:10.5px;color:var(--muted);margin-bottom:8px}
+  .opt{border:1px solid var(--line);border-radius:9px;padding:8px 9px;margin:6px 0;font-size:11.5px;background:var(--surface)}
+  .opt[data-selected="true"]{border-color:rgba(31,157,116,.45);background:#eef9f4}
+  .opt b{display:block;font-size:11.5px;font-weight:600}
+  .opt span{display:block;font-size:10.5px;color:var(--muted);margin-top:2px}
+  .right-foot{padding:10px 16px 14px;border-top:1px solid var(--line);display:flex;align-items:center;gap:10px}
+  .right-foot button{border:0;background:var(--green);color:#fff;border-radius:10px;padding:8px 13px;font-size:11.5px;font-weight:600}
+  .right-foot span{font-size:10.5px;color:var(--muted);line-height:1.3}
+  .divider{position:absolute;top:0;bottom:0;left:calc(100% - var(--right-width) - 7px);width:14px;z-index:5;
+    cursor:col-resize;touch-action:none;display:flex;justify-content:center;transition:transform .06s linear}
+  .divider .line{width:2px;height:100%;border-radius:2px;background:rgba(20,20,30,.16);
+    box-shadow:0 0 0 1px rgba(255,255,255,.55);transition:background .12s ease,box-shadow .12s ease}
+  .divider[data-dir="expand"] .line{background:var(--blue);box-shadow:0 0 0 1px rgba(255,255,255,.65),0 0 16px rgba(77,107,254,.75)}
+  .divider[data-dir="shrink"] .line{background:var(--red);box-shadow:0 0 0 1px rgba(255,255,255,.65),0 0 16px rgba(229,72,77,.7)}
+  .divider[data-dragging="true"]{transition:none}
+  #neon{position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:55}
+  .speck{position:fixed;width:3px;height:3px;border-radius:50%;pointer-events:none;z-index:56;
+    background:#c8fbff;box-shadow:0 0 10px rgba(117,236,255,.9);opacity:0}
+  .hintbar{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);z-index:60;font-size:11px;color:#fff;
+    background:rgba(20,22,30,.86);padding:7px 12px;border-radius:999px;pointer-events:none;opacity:0;transition:opacity .2s}
+  .hintbar.show{opacity:1}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div><b>Neon divider</b><span>concept · vertical line + particles</span></div>
+    </div>
+    <div class="controls">
+      <div class="group">Направление
+        <div class="seg" id="dirSeg">
+          <button data-dir="down" data-on="true">Сверху вниз</button>
+          <button data-dir="up" data-on="false">Снизу вверх</button>
+        </div>
+      </div>
+      <label class="range">Линия <input id="dur" type="range" min="0.5" max="1.5" step="0.1" value="0.9"><output id="durOut">0.9 s</output></label>
+      <label class="range">Частицы <input id="parts" type="range" min="0" max="2" step="0.1" value="1"><output id="partsOut">1.0×</output></label>
+      <button class="replay" id="replay">Replay</button>
+    </div>
+    <div class="status" id="status">Перетащи разделитель</div>
+  </header>
+
+  <main class="workspace" id="workspace">
+    <section class="chat" id="chat">
+      <div class="chat-head"><b>Исправление аннотаций в панели Codex</b><span>·</span><span>Standard mode</span></div>
+      <div class="chat-scroll">
+        <div class="msg user">и ещё по дроверу у меня идея чтобы не лагало как сделать</div>
+        <div class="msg assistant">
+          <h4>Схема</h4>
+          <ul>
+            <li>нативный dragger убираем; вместо него кастомный;</li>
+            <li>при перетаскивании двигается только линия, layout не меняется;</li>
+            <li>влево — DeepSeek blue, вправо — red;</li>
+            <li>на pointerup — вертикальная неоновая линия + молния + частицы;</li>
+            <li>линия идёт по вертикали, без заливки экрана;</li>
+            <li>после линии — FLIP/интерполяция в финальные позиции.</li>
+          </ul>
+        </div>
+        <div class="msg assistant">Перетащи разделитель справа → отпусти. Линия вертикальная, без заполнения; частицы разлетаются в стороны.</div>
+      </div>
+      <div class="composer" id="composer">
+        <div class="ph">Type / for commands</div>
+        <div class="send">↑</div>
+      </div>
+    </section>
+
+    <aside class="right" id="right">
+      <div class="right-tabs"><span class="right-tab">Artifacts</span><span>Files</span></div>
+      <div class="right-pane">
+        <div class="kicker">Решение · опросник</div>
+        <h2>Выберите приоритеты — соберу предложение</h2>
+        <p>Отвечайте в любом порядке. Ответы видны сразу в сводке справа. Когда закончите — нажмите «Отправить ответы».</p>
+        <div class="card">
+          <h3>Что важнее в этой поездке?</h3>
+          <div class="hint">Это главный рычаг: он меняет и время в пути, и набор ночёвок.</div>
+          <div class="opt" data-selected="true"><b>Успеть быстрее</b><span>Длинные дневные перегоны, меньше остановок</span></div>
+          <div class="opt"><b>Безопаснее и спокойнее</b><span>Световой день, запасные ночёвки, меньше риска</span></div>
+          <div class="opt"><b>Дешевле</b><span>Без платных участков, бюджетные ночёвки</span></div>
+        </div>
+        <div class="card">
+          <h3>Где ночевать?</h3>
+          <div class="hint">Можно выбрать несколько приоритетов.</div>
+          <div class="opt"><b>Гостиница/мотель</b><span>Кровать, душ, охраняемая парковка</span></div>
+          <div class="opt" data-selected="true"><b>Квартира на сутки</b><span>Дешевле, но нужен созвон и договорённости</span></div>
+        </div>
+      </div>
+      <div class="right-foot"><button>Отправить ответы</button><span>Восстановлены сохранённые ответы — можно продолжить.</span></div>
+    </aside>
+
+    <div class="divider" id="divider" data-dir="neutral"><div class="line" id="dividerLine"></div></div>
+  </main>
+</div>
+
+<canvas id="neon"></canvas>
+<div class="hintbar" id="hintbar">линия идёт по вертикали, layout пересчитывается под ней</div>
+
+<script>
+(() => {
+  const root = document.documentElement;
+  const workspace = document.getElementById('workspace');
+  const right = document.getElementById('right');
+  const chat = document.getElementById('chat');
+  const composer = document.getElementById('composer');
+  const divider = document.getElementById('divider');
+  const status = document.getElementById('status');
+  const hintbar = document.getElementById('hintbar');
+  const canvas = document.getElementById('neon');
+  const ctx = canvas.getContext('2d');
+  const dur = document.getElementById('dur');
+  const durOut = document.getElementById('durOut');
+  const parts = document.getElementById('parts');
+  const partsOut = document.getElementById('partsOut');
+
+  const START_WIDTH = 460;
+  const MIN_WIDTH = 300;
+  const MAX_RATIO = 0.70;
+
+  let dir = 'down';
+  let duration = 0.9;
+  let particleScale = 1;
+  let drag = null;
+  let anim = null;
+  let raf = 0;
+  let dpr = 1;
+
+  const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+  const ease = (t) => 1 - Math.pow(1 - t, 3);
+
+  function setWidth(w) { root.style.setProperty('--right-width', `${w}px`); }
+  function rectOf(el) { const r = el.getBoundingClientRect(); return { left: r.left, top: r.top, width: r.width, height: r.height }; }
+  function captureRects() { return { right: rectOf(right), chat: rectOf(chat), composer: rectOf(composer) }; }
+
+  function applyInverse(oldRects, newRects) {
+    const pairs = [[right, oldRects.right, newRects.right], [chat, oldRects.chat, newRects.chat], [composer, oldRects.composer, newRects.composer]];
+    for (const [el, oldR, newR] of pairs) {
+      if (!newR.width || !newR.height) continue;
+      const tx = oldR.left - newR.left;
+      const ty = oldR.top - newR.top;
+      const sx = oldR.width / newR.width;
+      const sy = oldR.height / newR.height;
+      el.style.transition = 'none';
+      el.style.transformOrigin = 'left top';
+      el.style.transform = `translate(${tx}px, ${ty}px) scale(${sx}, ${sy})`;
+      el.dataset.flipping = 'true';
+    }
+  }
+
+  function releaseInverse() {
+    for (const el of [right, chat, composer]) {
+      if (el.dataset.flipping !== 'true') continue;
+      el.style.transition = 'transform 460ms cubic-bezier(.2,.8,.25,1.16)';
+      el.style.transform = 'none';
+      el.dataset.flipping = 'false';
+    }
+  }
+
+  function clearInverse() {
+    for (const el of [right, chat, composer]) {
+      el.style.transition = '';
+      el.style.transform = '';
+      el.dataset.flipping = '';
+    }
+  }
+
+  function resetCanvas() {
+    dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.max(1, Math.round(window.innerWidth * dpr));
+    canvas.height = Math.max(1, Math.round(window.innerHeight * dpr));
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+  }
+
+  function resetDemo() {
+    if (raf) cancelAnimationFrame(raf);
+    raf = 0;
+    anim = null;
+    drag = null;
+    divider.style.transform = '';
+    divider.dataset.dragging = 'false';
+    divider.dataset.dir = 'neutral';
+    setWidth(START_WIDTH);
+    clearInverse();
+    resetCanvas();
+    hintbar.classList.remove('show');
+    status.textContent = 'Перетащи разделитель';
+  }
+
+  // ---- custom dragger -----------------------------------------------------
+  divider.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    if (anim) return;
+    drag = { pointerId: event.pointerId, startX: event.clientX, startWidth: right.getBoundingClientRect().width, currentX: event.clientX };
+    divider.setPointerCapture(event.pointerId);
+    divider.dataset.dragging = 'true';
+    divider.dataset.dir = 'neutral';
+    status.textContent = 'drag: layout не меняется';
+  });
+
+  divider.addEventListener('pointermove', (event) => {
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    drag.currentX = event.clientX;
+    const dx = event.clientX - drag.startX;
+    if (Math.abs(dx) < 1) { divider.dataset.dir = 'neutral'; divider.style.transform = ''; return; }
+    divider.dataset.dir = dx < 0 ? 'expand' : 'shrink';
+    divider.style.transform = `translateX(${dx}px)`;
+    status.textContent = dx < 0 ? 'expand → DeepSeek blue' : 'shrink → red';
+  });
+
+  const endDrag = (event) => {
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    const d = drag;
+    drag = null;
+    divider.dataset.dragging = 'false';
+    divider.dataset.dir = 'neutral';
+    const dx = d.currentX - d.startX;
+    if (Math.abs(dx) < 2) {
+      divider.style.transform = '';
+      status.textContent = 'Перетащи разделитель';
+      return;
+    }
+    const maxWidth = Math.max(MIN_WIDTH, Math.round(workspace.getBoundingClientRect().width * MAX_RATIO));
+    const nextWidth = clamp(Math.round(d.startWidth - dx), MIN_WIDTH, maxWidth);
+    const oldRects = captureRects();
+    setWidth(nextWidth);
+    divider.style.transform = '';
+    const newRects = captureRects();
+    applyInverse(oldRects, newRects);
+    startScan(nextWidth);
+  };
+  divider.addEventListener('pointerup', endDrag);
+  divider.addEventListener('pointercancel', endDrag);
+
+  // ---- vertical neon line + lightning + particles -------------------------
+  function startScan(finalWidth) {
+    resetCanvas();
+    const W = window.innerWidth;
+    const H = window.innerHeight;
+    const finalX = W - finalWidth;
+    const start = performance.now();
+    const durationMs = duration * 1000;
+    anim = { start, durationMs, finalX, released: false };
+    const particles = [];
+    hintbar.classList.add('show');
+    status.textContent = 'vertical scan + layout recalc';
+    const tick = (now) => {
+      if (!anim) return;
+      const t = clamp((now - anim.start) / anim.durationMs, 0, 1);
+      draw(t, particles);
+      if (t < 1) { raf = requestAnimationFrame(tick); return; }
+      raf = 0;
+      if (!anim.released) {
+        anim.released = true;
+        hintbar.classList.remove('show');
+        status.textContent = 'layout ready → movement';
+        setTimeout(() => {
+          releaseInverse();
+          setTimeout(() => {
+            fadeCanvas();
+            if (anim) { anim = null; status.textContent = 'Готово. Replay или drag again'; }
+          }, 520);
+        }, 80);
+      }
+    };
+    raf = requestAnimationFrame(tick);
+  }
+
+  function fadeCanvas() {
+    const W = window.innerWidth;
+    const H = window.innerHeight;
+    const start = performance.now();
+    const fade = (now) => {
+      const t = Math.min(1, (now - start) / 340);
+      ctx.clearRect(0, 0, W, H);
+      if (t < 1) requestAnimationFrame(fade);
+    };
+    requestAnimationFrame(fade);
+  }
+
+  function draw(t, particles) {
+    const W = window.innerWidth;
+    const H = window.innerHeight;
+    ctx.clearRect(0, 0, W, H);
+    const x = anim.finalX;
+    const down = dir === 'down';
+    const head = down ? ease(t) * H : H - ease(t) * H;
+    const startY = down ? 0 : H;
+    drawLine(x, startY, head, t);
+    spawn(x, head, particles);
+    update(particles);
+  }
+
+  function drawLine(x, startY, head, t) {
+    // Main vertical neon line. No fill, no veil — just the line.
+    const grad = ctx.createLinearGradient(0, startY, 0, head);
+    grad.addColorStop(0, 'rgba(77,107,254,.10)');
+    grad.addColorStop(0.55, 'rgba(117,236,255,.85)');
+    grad.addColorStop(1, '#ffffff');
+    ctx.save();
+    ctx.shadowColor = 'rgba(117,236,255,.95)';
+    ctx.shadowBlur = 18;
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x, startY);
+    ctx.lineTo(x, head);
+    ctx.stroke();
+    ctx.restore();
+
+    // Small lightning: a few jagged branches peeling off the line.
+    ctx.save();
+    ctx.shadowColor = 'rgba(160,240,255,.9)';
+    ctx.shadowBlur = 10;
+    ctx.strokeStyle = 'rgba(190,248,255,.8)';
+    ctx.lineWidth = 0.9;
+    const branches = 3 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < branches; i++) {
+      const y = startY + (head - startY) * (0.15 + Math.random() * 0.8);
+      const side = Math.random() < 0.5 ? -1 : 1;
+      const len = 6 + Math.random() * 18;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + side * (3 + Math.random() * 5), y + (Math.random() - 0.5) * 9);
+      ctx.lineTo(x + side * len, y + (Math.random() - 0.5) * 14);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function spawn(x, y, particles) {
+    const count = Math.round((2 + Math.random() * 3) * particleScale);
+    for (let i = 0; i < count; i++) {
+      const angle = (Math.random() - 0.5) * Math.PI * 1.1;
+      const speed = 0.6 + Math.random() * 2.2;
+      particles.push({
+        x: x + (Math.random() - 0.5) * 3,
+        y,
+        vx: Math.sin(angle) * speed,
+        vy: (dir === 'down' ? 1 : -1) * (0.2 + Math.random() * 0.8) + Math.cos(angle) * 0.35,
+        life: 1,
+        size: 0.7 + Math.random() * 1.8,
+        hue: Math.random() < 0.5 ? '117,236,255' : '77,107,254',
+      });
+    }
+  }
+
+  function update(particles) {
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vy += 0.01;
+      p.life -= 0.012;
+      if (p.life <= 0) { particles.splice(i, 1); continue; }
+      ctx.fillStyle = `rgba(${p.hue},${Math.max(0, p.life)})`;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // ---- controls -----------------------------------------------------------
+  for (const btn of document.querySelectorAll('#dirSeg button')) {
+    btn.addEventListener('click', () => {
+      dir = btn.dataset.dir;
+      for (const b of document.querySelectorAll('#dirSeg button')) b.dataset.on = String(b === btn);
+    });
+  }
+  dur.addEventListener('input', () => { duration = Number(dur.value); durOut.textContent = duration.toFixed(1) + ' s'; });
+  parts.addEventListener('input', () => { particleScale = Number(parts.value); partsOut.textContent = particleScale.toFixed(1) + '×'; });
+  document.getElementById('replay').addEventListener('click', resetDemo);
+  window.addEventListener('resize', resetCanvas);
+
+  resetDemo();
+})();
+</script>
+</body>
+</html>

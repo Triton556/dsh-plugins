@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Режимы разрешений DSH</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --fg: #1b1b1a;
+    --muted: #6b6b66;
+    --line: #e6e4df;
+    --fill: #1b1b1a;
+    --on-fill: #ffffff;
+    --hover: #f2f0ec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17181a;
+      --fg: #ecebe7;
+      --muted: #9a9a95;
+      --line: #2c2d30;
+      --fill: #ecebe7;
+      --on-fill: #17181a;
+      --hover: #232426;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 18px 20px 22px;
+    background: var(--bg);
+    color: var(--fg);
+    font: 14px/1.5 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
+  .head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .now { font-size: 11px; color: var(--muted); }
+  .sub { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
+  [role="tablist"] { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 14px; }
+  [role="tab"] {
+    appearance: none; border: 0; background: transparent; color: var(--muted);
+    font: inherit; font-size: 12px; padding: 6px 10px; border-radius: 7px; cursor: pointer;
+  }
+  [role="tab"]:hover { background: var(--hover); }
+  [role="tab"]:focus-visible { outline: 2px solid var(--muted); outline-offset: 1px; }
+  [role="tab"][aria-selected="true"] { background: var(--fill); color: var(--on-fill); }
+  [role="tabpanel"] { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+  [role="tabpanel"][hidden] { display: none; }
+  .lead { margin: 0; font-size: 13px; }
+  dl { margin: 8px 0 0; }
+  .row {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
+    padding: 8px 0; border-bottom: 1px solid var(--line);
+  }
+  .row:last-child { border-bottom: 0; }
+  dt { margin: 0; font-size: 13px; color: var(--muted); }
+  dd { margin: 0; font-size: 13px; text-align: right; }
+  .fit { margin: 8px 0 0; font-size: 12px; color: var(--muted); }
+  footer { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); }
+  code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; color: var(--fg); }
+</style>
+</head>
+<body>
+  <div class="head">
+    <h1>Режимы разрешений DSH</h1>
+    <span class="now">сейчас: Full access</span>
+  </div>
+  <p class="sub">Один переключатель задаёт и песочницу, и политику одобрений.</p>
+
+  <div role="tablist" aria-label="Режим разрешений">
+    <button role="tab" id="tab-read" aria-controls="panel-read" aria-selected="false" tabindex="-1">Read Only</button>
+    <button role="tab" id="tab-write" aria-controls="panel-write" aria-selected="false" tabindex="-1">Workspace Write</button>
+    <button role="tab" id="tab-full" aria-controls="panel-full" aria-selected="true" tabindex="0">Full access</button>
+    <button role="tab" id="tab-auto" aria-controls="panel-auto" aria-selected="false" tabindex="-1">Auto review</button>
+  </div>
+
+  <section role="tabpanel" id="panel-read" aria-labelledby="tab-read" hidden>
+    <p class="lead">Только чтение: запись запрещена везде.</p>
+    <dl>
+      <div class="row"><dt>Чтение файлов</dt><dd>да</dd></div>
+      <div class="row"><dt>Запись в рабочей папке</dt><dd>нет</dd></div>
+      <div class="row"><dt>Запись вне рабочей папки</dt><dd>нет</dd></div>
+      <div class="row"><dt>Одобрения</dt><dd>спрашивает</dd></div>
+    </dl>
+    <p class="fit">Посмотреть, объяснить, найти — ничего не меняя.</p>
+  </section>
+
+  <section role="tabpanel" id="panel-write" aria-labelledby="tab-write" hidden>
+    <p class="lead">Запись только внутри рабочей папки.</p>
+    <dl>
+      <div class="row"><dt>Чтение файлов</dt><dd>да</dd></div>
+      <div class="row"><dt>Запись в рабочей папке</dt><dd>да</dd></div>
+      <div class="row"><dt>Запись вне рабочей папки</dt><dd>отказ, можно разово одобрить</dd></div>
+      <div class="row"><dt>Одобрения</dt><dd>спрашивает</dd></div>
+    </dl>
+    <p class="fit">Обычная работа в проекте: правки кода, генерация файлов.</p>
+  </section>
+
+  <section role="tabpanel" id="panel-full" aria-labelledby="tab-full">
+    <p class="lead">Ни песочницы, ни вопросов.</p>
+    <dl>
+      <div class="row"><dt>Чтение файлов</dt><dd>да</dd></div>
+      <div class="row"><dt>Запись в рабочей папке</dt><dd>да</dd></div>
+      <div class="row"><dt>Запись вне рабочей папки</dt><dd>да</dd></div>
+      <div class="row"><dt>Одобрения</dt><dd>никогда</dd></div>
+    </dl>
+    <p class="fit">Когда доверяешь: база знаний вне папки, плагины, установки.</p>
+  </section>
+
+  <section role="tabpanel" id="panel-auto" aria-labelledby="tab-auto" hidden>
+    <p class="lead">Полный доступ, но каждый вызов инструмента проверяет модель-ревьюер.</p>
+    <dl>
+      <div class="row"><dt>Чтение файлов</dt><dd>да</dd></div>
+      <div class="row"><dt>Запись в рабочей папке</dt><dd>да</dd></div>
+      <div class="row"><dt>Запись вне рабочей папки</dt><dd>да, после ревью</dd></div>
+      <div class="row"><dt>Одобрения</dt><dd>мелкое молча, среднее спросит</dd></div>
+    </dl>
+    <p class="fit">Плата — один лишний запрос модели на каждый вызов. Экспериментально.</p>
+  </section>
+
+  <footer>
+    Переключить: <code>/permission</code> в композере или чип режима рядом с выбором модели.
+    Дефолт для новых сессий — Settings → General.
+  </footer>
+
+<script>
+  (function () {
+    var tabs = Array.prototype.slice.call(document.querySelectorAll('[role="tab"]'));
+    function select(index, focus) {
+      tabs.forEach(function (tab, i) {
+        var on = i === index;
+        tab.setAttribute('aria-selected', on ? 'true' : 'false');
+        tab.setAttribute('tabindex', on ? '0' : '-1');
+        document.getElementById(tab.getAttribute('aria-controls')).hidden = !on;
+      });
+      if (focus) tabs[index].focus();
+    }
+    tabs.forEach(function (tab, i) {
+      tab.addEventListener('click', function () { select(i, false); });
+      tab.addEventListener('keydown', function (event) {
+        var next = null;
+        if (event.key === 'ArrowRight') next = (i + 1) % tabs.length;
+        else if (event.key === 'ArrowLeft') next = (i - 1 + tabs.length) % tabs.length;
+        else if (event.key === 'Home') next = 0;
+        else if (event.key === 'End') next = tabs.length - 1;
+        if (next === null) return;
+        event.preventDefault();
+        select(next, true);
+      });
+    });
+  })();
+</script>
+</body>
+</html>

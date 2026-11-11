@@ -1,0 +1,31 @@
+{
+  "name": "dsh-computer-use",
+  "version": "0.1.0",
+  "description": "Computer use for DeepSeek Harness: window listing, occlusion-proof screenshots, mouse/keyboard control, Chrome tabs, clipboard, OCR, CDP and frame recording.",
+  "license": "MIT",
+  "type": "module",
+  "keywords": ["deepseek-harness", "dsh", "cordis", "computer-use", "cua", "automation"],
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "tools",
+    "cordis.patch.yml",
+    "SKILL.md",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.1"
+  }
+}

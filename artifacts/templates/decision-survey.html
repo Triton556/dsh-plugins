@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Опросник решения</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --paper: #fffdf8; --ink: #24211c; --muted: #6f6a61;
+    --line: #e3ded3; --accent: #2f6f5e; --accent-soft: #e7f2ee;
+    --warn: #a8562f; --warn-soft: #fbeee6; --radius: 14px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17161a; --paper: #1f1e24; --ink: #ece8df; --muted: #a29c92;
+      --line: #35323c; --accent: #7ec7b1; --accent-soft: #22332e;
+      --warn: #e39a74; --warn-soft: #33251f;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { background: var(--bg); color: var(--ink); font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 28px 20px 120px; }
+  .eyebrow { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+  h1 { font-size: clamp(22px, 4vw, 32px); line-height: 1.15; margin: 6px 0 8px; letter-spacing: -.01em; }
+  .lead { color: var(--muted); max-width: 62ch; margin: 0 0 22px; }
+  .progress { height: 4px; background: var(--line); border-radius: 99px; overflow: hidden; margin-bottom: 26px; }
+  .progress > span { display: block; height: 100%; width: 0; background: var(--accent); transition: width .25s ease; }
+  .grid { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 22px; align-items: start; }
+  @media (max-width: 760px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+  .q { background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 16px 10px; margin-bottom: 14px; }
+  .q h2 { font-size: 15px; margin: 0 0 4px; }
+  .q p.hint { color: var(--muted); font-size: 12.5px; margin: 0 0 10px; }
+  .opts { display: grid; gap: 8px; }
+  .opt { text-align: left; border: 1px solid var(--line); background: transparent; color: inherit; border-radius: 10px; padding: 9px 11px; cursor: pointer; font: inherit; display: flex; gap: 10px; align-items: flex-start; }
+  .opt:hover { border-color: var(--accent); }
+  .opt[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
+  .opt b { display: block; font-size: 13.5px; }
+  .opt small { display: block; color: var(--muted); font-size: 12px; }
+  .opt .dot { flex: none; width: 14px; height: 14px; border-radius: 99px; border: 1.5px solid var(--line); margin-top: 3px; }
+  .opt[aria-pressed="true"] .dot { border-color: var(--accent); background: var(--accent); box-shadow: inset 0 0 0 3px var(--paper); }
+  .aside { position: sticky; top: 16px; background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; }
+  .aside h3 { margin: 0 0 10px; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  .sum { font-size: 13px; }
+  .sum .row { display: flex; justify-content: space-between; gap: 10px; padding: 5px 0; border-bottom: 1px dashed var(--line); }
+  .sum .row:last-child { border-bottom: 0; }
+  .sum .row span:last-child { color: var(--muted); text-align: right; }
+  .verdict { margin-top: 12px; padding: 10px 12px; border-radius: 10px; background: var(--accent-soft); font-size: 13px; }
+  .verdict b { display: block; margin-bottom: 2px; }
+  .foot { position: fixed; left: 0; right: 0; bottom: 0; background: var(--paper); border-top: 1px solid var(--line); padding: 10px 20px; }
+  .foot .inner { max-width: 960px; margin: 0 auto; display: flex; gap: 12px; align-items: center; }
+  .send { font: inherit; font-weight: 600; padding: 9px 18px; border-radius: 10px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
+  .send:disabled { opacity: .5; cursor: default; }
+  .status { font-size: 12.5px; color: var(--muted); min-height: 18px; }
+  .status.ok { color: var(--accent); }
+  .status.bad { color: #c0392b; }
+  .raw { margin-top: 10px; font-size: 11px; color: var(--muted); }
+  .raw summary { cursor: pointer; }
+  .raw pre { white-space: pre-wrap; word-break: break-word; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px; max-height: 180px; overflow: auto; }
+  @media print { .foot, .aside .send-note { display: none; } body { background: #fff; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="eyebrow">Решение · опросник</div>
+  <h1>Выберите приоритеты — соберу предложение</h1>
+  <p class="lead" id="lead">Отвечайте в любом порядке. Ответы видны сразу в сводке справа. Когда закончите — нажмите «Отправить ответы», и я продолжу работу с этим выбором.</p>
+
+  <div class="progress" aria-hidden="true"><span id="bar"></span></div>
+
+  <div class="grid">
+    <div id="questions"><!-- built by script --></div>
+
+    <aside class="aside" aria-label="Сводка ответов">
+      <h3>Сводка</h3>
+      <div class="sum" id="summary"></div>
+      <div class="verdict" id="verdict" hidden></div>
+      <p class="raw" style="margin-top:12px">Вне DSH страница открыта отдельно — ответы можно скопировать вручную.</p>
+      <details class="raw"><summary>Показать JSON ответов</summary><pre id="rawjson">—</pre></details>
+    </aside>
+  </div>
+</div>
+
+<div class="foot">
+  <div class="inner">
+    <button class="send" id="send" type="button">Отправить ответы</button>
+    <span class="status" id="status"></span>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ---- Конфигурация опросника: замените под решение. -----------------------
+  var SURVEY = {
+    id: 'decision-demo',
+    title: 'Выберите приоритеты',
+    questions: [
+      {
+        id: 'speed_vs_safety',
+        title: 'Что важнее в этой поездке?',
+        hint: 'Это главный рычаг: он меняет и время в пути, и набор ночёвок.',
+        options: [
+          { value: 'fast', label: 'Успеть быстрее', note: 'Длинные дневные перегоны, меньше остановок' },
+          { value: 'safe', label: 'Безопаснее и спокойнее', note: 'Световой день, запасные ночёвки, меньше риска' },
+          { value: 'cheap', label: 'Дешевле', note: 'Без платных участков, бюджетные ночёвки' }
+        ]
+      },
+      {
+        id: 'overnight_style',
+        title: 'Где ночевать?',
+        hint: 'Можно выбрать несколько приоритетов.',
+        multiple: true,
+        options: [
+          { value: 'hotel', label: 'Гостиница/мотель', note: 'Кровать, душ, охраняемая парковка' },
+          { value: 'apartment', label: 'Квартира на сутки', note: 'Дешевле, но нужен созвон и договорённости' },
+          { value: 'camping', label: 'Кемпинг / машина', note: 'Максимальная свобода, минимум удобств' }
+        ]
+      },
+      {
+        id: 'dog',
+        title: 'С собакой — что критично?',
+        hint: 'Отметьте всё, что обязательно.',
+        multiple: true,
+        options: [
+          { value: 'confirmed', label: 'Только подтверждённое разрешение', note: 'Звонок/переписка до выезда' },
+          { value: 'fenced', label: 'Огороженная территория', note: 'Гулять без поводка рядом' },
+          { value: 'any', label: 'Не принципиально', note: 'Готов(а) обсуждать на месте' }
+        ]
+      },
+      {
+        id: 'risk_appetite',
+        title: 'Насколько вы готовы рисковать на дороге?',
+        hint: 'Влияет на запас времени и выбор участков.',
+        options: [
+          { value: 'low', label: 'Только низкий риск', note: 'Объезды и лишние сутки допустимы' },
+          { value: 'medium', label: 'Средний', note: 'Готов(а) к сложному участку днём с запасом' },
+          { value: 'high', label: 'Высокий', note: 'Поеду и по сложной дороге, лишь бы быстрее' }
+        ]
+      },
+      {
+        id: 'budget',
+        title: 'Бюджет на ночлег за ночь',
+        options: [
+          { value: 'lt3', label: 'до 3 000 ₽' },
+          { value: '3to6', label: '3 000–6 000 ₽' },
+          { value: 'gt6', label: 'больше 6 000 ₽' }
+        ]
+      }
+    ]
+  };
+  // -------------------------------------------------------------------------
+
+  var answers = {};
+  var root = document.getElementById('questions');
+  var summary = document.getElementById('summary');
+  var verdict = document.getElementById('verdict');
+  var bar = document.getElementById('bar');
+  var send = document.getElementById('send');
+  var statusEl = document.getElementById('status');
+  var rawjson = document.getElementById('rawjson');
+  var sent = false;
+
+  function answersFilled() {
+    var filled = 0;
+    for (var i = 0; i < SURVEY.questions.length; i += 1) {
+      var q = SURVEY.questions[i];
+      var a = answers[q.id];
+      if (Array.isArray(a) ? a.length > 0 : a != null) filled += 1;
+    }
+    return filled;
+  }
+
+  function labelOf(q, value) {
+    for (var i = 0; i < q.options.length; i += 1) {
+      if (q.options[i].value === value) return q.options[i].label;
+    }
+    return value;
+  }
+
+  function renderQuestion(q) {
+    var box = document.createElement('section');
+    box.className = 'q';
+    var h = document.createElement('h2');
+    h.textContent = q.title;
+    box.appendChild(h);
+    if (q.hint) {
+      var p = document.createElement('p');
+      p.className = 'hint';
+      p.textContent = q.hint;
+      box.appendChild(p);
+    }
+    var opts = document.createElement('div');
+    opts.className = 'opts';
+    q.options.forEach(function (o) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'opt';
+      b.setAttribute('aria-pressed', 'false');
+      b.innerHTML = '<span class="dot"></span><span><b></b><small></small></span>';
+      b.querySelector('b').textContent = o.label;
+      b.querySelector('small').textContent = o.note || '';
+      b.addEventListener('click', function () {
+        if (sent) return;
+        if (q.multiple) {
+          var list = Array.isArray(answers[q.id]) ? answers[q.id] : [];
+          var at = list.indexOf(o.value);
+          if (at === -1) list.push(o.value); else list.splice(at, 1);
+          answers[q.id] = list;
+        } else {
+          answers[q.id] = answers[q.id] === o.value ? null : o.value;
+        }
+        sync();
+      });
+      b.dataset.value = o.value;
+      b.dataset.qid = q.id;
+      opts.appendChild(b);
+    });
+    box.appendChild(opts);
+    return box;
+  }
+
+  function sync() {
+    var all = root.querySelectorAll('.opt');
+    for (var i = 0; i < all.length; i += 1) {
+      var el = all[i];
+      var a = answers[el.dataset.qid];
+      var on = Array.isArray(a) ? a.indexOf(el.dataset.value) !== -1 : a === el.dataset.value;
+      el.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+    var filled = answersFilled();
+    bar.style.width = Math.round((filled / SURVEY.questions.length) * 100) + '%';
+
+    summary.innerHTML = '';
+    for (var j = 0; j < SURVEY.questions.length; j += 1) {
+      var q = SURVEY.questions[j];
+      var a = answers[q.id];
+      var text = Array.isArray(a) ? a.map(function (v) { return labelOf(q, v); }).join(', ') : (a ? labelOf(q, a) : '—');
+      var row = document.createElement('div');
+      row.className = 'row';
+      var k = document.createElement('span');
+      k.textContent = q.title;
+      var v = document.createElement('span');
+      v.textContent = text;
+      row.appendChild(k);
+      row.appendChild(v);
+      summary.appendChild(row);
+    }
+    rawjson.textContent = JSON.stringify(answers, null, 2);
+
+    verdict.hidden = true;
+    if (answers.speed_vs_safety) {
+      var map = {
+        fast: ['Быстрый вариант', 'Длинные перегоны; риск-участки только днём, ночёвки ближе к трассе.'],
+        safe: ['Световой вариант', 'Старт на рассвете, запасные ночёвки, объезд сложных участков.'],
+        cheap: ['Бюджетный вариант', 'Без платных участков; ночёвки дешевле, возможен лишний день.']
+      };
+      var m = map[answers.speed_vs_safety];
+      verdict.hidden = false;
+      verdict.innerHTML = '<b></b><span></span>';
+      verdict.querySelector('b').textContent = m[0];
+      verdict.querySelector('span').textContent = m[1];
+    }
+
+    send.disabled = answersFilled() === 0;
+    scheduleDraft();
+  }
+
+  // ---- Отправка и автосохранение -------------------------------------------
+  // Внутри DSH каждый выбор сразу уходит черновиком в файл: перезагрузка
+  // страницы или перезапуск DSH не теряют прогресс. Кнопка фиксирует финальный
+  // ответ; «Отправлено» показывается только после подтверждения от плагина.
+  var embedded = window.parent && window.parent !== window;
+  var restoring = false;
+  var draftTimer = null;
+  var finalTimer = null;
+  var heard = false;
+  var readyTries = 0;
+
+  function postToHost(payload) {
+    try { window.parent.postMessage(payload, '*'); } catch (e) {}
+  }
+
+  function scheduleDraft() {
+    if (!embedded || sent || restoring || answersFilled() === 0) return;
+    if (draftTimer) clearTimeout(draftTimer);
+    draftTimer = setTimeout(function () {
+      draftTimer = null;
+      postToHost({ type: 'dsh-artifact-draft', requestId: SURVEY.id, answers: answers });
+    }, 400);
+  }
+
+  function noteDraft() {
+    if (sent) return;
+    var now = new Date();
+    var hh = ('0' + now.getHours()).slice(-2);
+    var mm = ('0' + now.getMinutes()).slice(-2);
+    statusEl.textContent = 'Черновик сохранён в ' + hh + ':' + mm + ' — ответы не пропадут при перезагрузке.';
+    statusEl.className = 'status ok';
+  }
+
+  function fail(text) {
+    if (finalTimer) { clearTimeout(finalTimer); finalTimer = null; }
+    send.disabled = false;
+    send.textContent = 'Повторить отправку';
+    statusEl.textContent = text + ' JSON ответов можно скопировать ниже.';
+    statusEl.className = 'status bad';
+  }
+
+  function restore(saved) {
+    if (!saved || typeof saved !== 'object') return;
+    var had = false;
+    SURVEY.questions.forEach(function (q) {
+      if (!Object.prototype.hasOwnProperty.call(saved, q.id)) return;
+      var value = saved[q.id];
+      if (q.multiple) {
+        if (Array.isArray(value)) {
+          var kept = value.filter(function (v) { return typeof v === 'string'; });
+          if (kept.length) { answers[q.id] = kept; had = true; }
+        }
+        return;
+      }
+      if (typeof value === 'string' && value) { answers[q.id] = value; had = true; }
+    });
+    if (!had) return;
+    restoring = true;
+    sync();
+    restoring = false;
+    statusEl.textContent = 'Восстановлены сохранённые ответы — можно продолжить.';
+    statusEl.className = 'status ok';
+  }
+
+  window.addEventListener('message', function (event) {
+    var data = event.data;
+    if (!data || typeof data.type !== 'string') return;
+    if (data.type === 'dsh-artifact-restore') {
+      heard = true;
+      if (data.requestId && data.requestId !== SURVEY.id) return;
+      restore(data.answers);
+      return;
+    }
+    if (data.type !== 'dsh-artifact-ack') return;
+    heard = true;
+    if (data.kind === 'draft') { if (data.ok) noteDraft(); return; }
+    if (data.kind !== 'final') return;
+    if (finalTimer) { clearTimeout(finalTimer); finalTimer = null; }
+    if (data.ok) {
+      sent = true;
+      send.disabled = true;
+      send.textContent = 'Отправлено';
+      statusEl.textContent = 'Ответы сохранены. Можно вернуться в чат.';
+      statusEl.className = 'status ok';
+    } else {
+      fail('Не удалось сохранить ответ: ' + (data.error || 'ошибка'));
+    }
+  });
+
+  function sendAnswers() {
+    if (sent) return;
+    if (embedded) {
+      postToHost({
+        type: 'dsh-artifact-answer',
+        requestId: SURVEY.id,
+        answers: answers,
+        submittedAt: new Date().toISOString()
+      });
+      send.disabled = true;
+      send.textContent = 'Отправляю…';
+      statusEl.textContent = '';
+      statusEl.className = 'status';
+      finalTimer = setTimeout(function () {
+        finalTimer = null;
+        fail('Агент не подтвердил получение за 6 секунд.');
+      }, 6000);
+      return;
+    }
+    // Standalone page (opened from disk): no parent to receive the message.
+    navigator.clipboard && navigator.clipboard.writeText(JSON.stringify(answers, null, 2)).then(function () {
+      statusEl.textContent = 'Страница открыта вне DSH: JSON скопирован в буфер.';
+      statusEl.className = 'status ok';
+    }, function () {
+      statusEl.textContent = 'Страница открыта вне DSH: скопируйте JSON из сводки.';
+    });
+  }
+
+  // The iframe may finish loading before the plugin attaches its listener, so
+  // the announcement is retried until the host answers.
+  function announce() {
+    if (!embedded || heard || readyTries >= 6) return;
+    readyTries += 1;
+    postToHost({ type: 'dsh-artifact-ready', requestId: SURVEY.id });
+    setTimeout(announce, 400);
+  }
+
+  SURVEY.questions.forEach(function (q) { root.appendChild(renderQuestion(q)); });
+  send.addEventListener('click', sendAnswers);
+  sync();
+  announce();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Artifact Panes",
+    "description": "在原生右侧边栏中通过沙盒 iframe 渲染工作区 HTML 工件，文件变化时自动刷新。"
+  }
+}

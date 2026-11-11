@@ -1,0 +1,8 @@
+# dsh-artifact-panes bundle patch.
+#
+# Installed through `dsh plugin --profile desktop add dsh-artifact-panes` or the
+# plugin manager; the profile boot merges this single insert, and the client
+# half is picked up from `dsh.client` + `exports` in package.json.
+- insert:
+    - id: artifact-panes
+      name: 'dsh-artifact-panes'
