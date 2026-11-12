@@ -3,7 +3,7 @@
 // Every tool answers { ok, text }; screenshots and clips also carry an inline
 // attachment so the chat can show the picture without a second tool call.
 import { appendFileSync, readFileSync, existsSync, writeFileSync, unlinkSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { extname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -135,6 +135,102 @@ function stripOverlay(text) {
 // Some callers deliver UTF-8 text that was already decoded as CP1251, which turns
 // any non-ASCII window title into mojibake. A strict UTF-8 decode of the reversed
 // bytes only succeeds for real text, so it is a safe repair.
+// ------------------------------------------------------------------ tab badge
+// While computer_cdp works with a tab, the tab's favicon is composited with the
+// DeepSeek whale cursor (original icon underneath) and the title gets a marker.
+// Composites are cached per favicon URL; the restore runs with a linger timer so
+// back-to-back calls do not blink.
+const FAVICON_SPRITE = fileURLToPath(new URL('./tools/cursor-neon-crisp.png', import.meta.url));
+const FAVICON_COMPOSITE = fileURLToPath(new URL('./tools/favicon-composite.py', import.meta.url));
+const BADGE_LINGER_MS = 8000;
+const badgeDataUrls = new Map();   // favicon url -> composited data url
+const badgeTimers = new Map();     // `${port}|${ref}` -> restore timer
+const badgeTargets = new Map();    // `${port}|${ref}` -> resolved target id
+
+function badgeRestoreJs() {
+  return "(function(){ document.querySelectorAll('link[rel*=\\\"icon\\\"]').forEach((l)=>{ const s=(window.__dshSaved||[]).find((x)=>x.el===l); if(s) l.href=s.href; }); if(window.__dshTitle) document.title=window.__dshTitle; return 'off'; })()";
+}
+
+function badgePythonPath() {
+  const localPrograms = process.env['LOCALAPPDATA'] || join(process.env['USERPROFILE'] || '', 'AppData', 'Local');
+  const candidates = [
+    process.env.DSH_CUA_PYTHON,
+    join(localPrograms, 'Programs', 'DeepSeek Harness', 'resources', 'runtime', 'primary-runtime', 'dependencies', 'python', 'python.exe'),
+    join(process.env['ProgramFiles'] || 'C:\\Program Files', 'DeepSeek Harness', 'resources', 'runtime', 'primary-runtime', 'dependencies', 'python', 'python.exe'),
+    'python.exe'
+  ];
+  return candidates.find((p) => p && existsSync(p)) || null;
+}
+
+async function cdpBadgeOn(port, ref) {
+  const { cdp } = await import('./tools/engine.mjs');
+  const key = `${port}|${ref || ''}`;
+  const pending = badgeTimers.get(key);
+  if (pending) { clearTimeout(pending); badgeTimers.delete(key); }
+  const listRes = await cdp({ List: true, Port: port });
+  if (!listRes.ok) return;
+  const pages = JSON.parse(listRes.text).filter((t) => t.type === 'page');
+  const picked = pages.find((p) => p.id === ref)
+    || pages.find((p) => String(p.url || '').includes(ref))
+    || pages.find((p) => String(p.title || '').includes(ref))
+    || (ref ? null : pages[0]);
+  if (!picked) return;
+  const id = picked.id;
+  badgeTargets.set(key, id);
+
+  const hrefRes = await cdp({
+    Eval: "(function(){ const l=document.querySelector('link[rel*=\"icon\"]'); return l ? l.href : ''; })()",
+    Target: id, Port: port
+  });
+  const href = String(hrefRes.text || '').trim().split('\n')[0].trim();
+  if (!/^https?:/.test(href)) return;
+
+  let dataUrl = badgeDataUrls.get(href);
+  if (!dataUrl) {
+    const response = await fetch(href);
+    if (!response.ok) return;
+    const favPath = join(tmpdir(), `dsh-favicon-${Date.now()}`);
+    writeFileSync(favPath, Buffer.from(await response.arrayBuffer()));
+    const outPath = `${favPath}.b64`;
+    const python = badgePythonPath();
+    if (!python) return;
+    execFileSync(python, [FAVICON_COMPOSITE, favPath, outPath], { timeout: 20000 });
+    dataUrl = `data:image/png;base64,${readFileSync(outPath, 'utf8').trim()}`;
+    badgeDataUrls.set(href, dataUrl);
+    try { unlinkSync(favPath); unlinkSync(`${favPath}.b64.png`); unlinkSync(outPath); } catch (error) {}
+  }
+
+  const swap = `(function(){
+    const d = ${JSON.stringify(dataUrl)};
+    window.__dshTitle = window.__dshTitle || document.title;
+    window.__dshSaved = window.__dshSaved || [];
+    document.querySelectorAll('link[rel*="icon"]').forEach((l) => {
+      if (l.href === d) return;
+      const known = window.__dshSaved.find((x) => x.el === l);
+      if (!known) window.__dshSaved.push({ el: l, href: l.href });
+      l.type = 'image/png'; l.href = d;
+    });
+    if (!window.__dshSaved.length) {
+      const l = document.createElement('link');
+      l.rel = 'icon'; l.type = 'image/png'; l.href = d;
+      document.head.appendChild(l);
+    }
+    document.title = '[DSH working] ' + String(window.__dshTitle || '').slice(0, 30);
+    return 'on';
+  })()`;
+  await cdp({ Eval: swap, Target: id, Port: port });
+}
+
+async function cdpBadgeOff(port, ref) {
+  const { cdp } = await import('./tools/engine.mjs');
+  const key = `${port}|${ref || ''}`;
+  const id = badgeTargets.get(key);
+  if (!id) return;
+  badgeTargets.delete(key);
+  try { await cdp({ Eval: badgeRestoreJs(), Target: id, Port: port }); } catch (error) {}
+}
+
+// Some callers deliver UTF-8 text that was already decoded as CP1251, which turns
 const CP1251_BYTES = (() => {
   try {
     const decoder = new TextDecoder('windows-1251');
@@ -575,7 +671,19 @@ export function apply(ctx, config = {}) {
               const call = spec.run(args || {});
               if (call && call.cdp) {
                 const c = call.cdp;
-                return cdp({
+                // Tab indicator: badge on the favicon of the tab we are working
+                // with; the restore lingers so back-to-back calls do not blink.
+                if (c.action !== 'list') {
+                  const badgeKey = `${c.port || 9222}|${c.target || ''}`;
+                  const pending = badgeTimers.get(badgeKey);
+                  if (pending) { clearTimeout(pending); badgeTimers.delete(badgeKey); }
+                  await cdpBadgeOn(c.port || 9222, c.target).catch((e) => console.warn("[dsh-computer-use] badge:", String(e && e.message || e).slice(0, 160)));
+                  badgeTimers.set(badgeKey, setTimeout(() => {
+                    badgeTimers.delete(badgeKey);
+                    cdpBadgeOff(c.port || 9222, c.target).catch((e) => console.warn('[dsh-computer-use] badge off error:', String(e && e.message || e).slice(0, 140)));
+                  }, BADGE_LINGER_MS));
+                }
+                const result = await cdp({
                   port: c.port,
                   ...(c.action === 'list' ? { List: true } : {}),
                   ...(c.action === 'eval' ? { Eval: c.expression } : {}),
@@ -591,6 +699,17 @@ export function apply(ctx, config = {}) {
                   ...(c.action === 'scroll' ? { Scroll: `${c.x},${c.y}`, Delta: c.delta || -300 } : {}),
                   ...(c.target ? { Target: c.target } : {})
                 });
+                const badgeKey2 = `${c.port || 9222}|${c.target || ''}`;
+                if (c.action !== 'list') {
+                  const pending = badgeTimers.get(badgeKey2);
+                  if (pending) clearTimeout(pending);
+                  badgeTimers.set(badgeKey2, setTimeout(() => {
+                    console.warn('[dsh-computer-use] badge linger restore');
+                    badgeTimers.delete(badgeKey2);
+                    cdpBadgeOff(c.port || 9222, c.target).catch(() => {});
+                  }, BADGE_LINGER_MS));
+                }
+                return result;
               }
               const engineArgs = {};
               for (const [key, value] of Object.entries(call)) {
