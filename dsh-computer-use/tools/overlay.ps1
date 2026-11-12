@@ -16,6 +16,28 @@ param(
 
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 
+if (-not ('CuaGlow.ClickThroughForm' -as [type])) {
+  Add-Type -ReferencedAssemblies System.Windows.Forms, System.Drawing -TypeDefinition @'
+using System;
+using System.Windows.Forms;
+
+namespace CuaGlow {
+  // Every hit test answers HTTRANSPARENT, so the overlay never eats a click even
+  // where the layered colour key alone would still be hit-testable.
+  public class ClickThroughForm : Form {
+    public ClickThroughForm() {
+      DoubleBuffered = true;
+      SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
+    }
+    protected override void WndProc(ref Message m) {
+      if (m.Msg == 0x0084) { m.Result = (IntPtr)(-1); return; }
+      base.WndProc(ref m);
+    }
+  }
+}
+'@
+}
+
 if (-not ('CuaGlow.Native' -as [type])) {
   Add-Type -Namespace CuaGlow -Name Native -MemberDefinition @'
 [DllImport("user32.dll")] public static extern int GetWindowLong(System.IntPtr hWnd, int nIndex);
@@ -48,7 +70,7 @@ for ($i = 0; $i -lt 24; $i++) {
 }
 $virtual = [System.Windows.Forms.SystemInformation]::VirtualScreen
 
-$form = New-Object System.Windows.Forms.Form
+$form = New-Object CuaGlow.ClickThroughForm
 $form.FormBorderStyle = 'None'
 $form.ShowInTaskbar = $false
 $form.TopMost = $true
@@ -56,8 +78,7 @@ $form.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
 $form.BackColor = $fuchsia
 $form.TransparencyKey = $fuchsia
 $form.Bounds = $virtual
-$form.DoubleBuffered = $true
-$form.Opacity = 0.15
+$form.Opacity = 0.22
 $form.Add_HandleCreated({
   $style = [CuaGlow.Native]::GetWindowLong($form.Handle, -20)
   [void][CuaGlow.Native]::SetWindowLong($form.Handle, -20, ($style -bor 0x20 -bor 0x80 -bor 0x08000000))
@@ -121,15 +142,14 @@ $form.Show()
 
 # The cursor lives in its own window: the glow form is translucent as a whole, and
 # that would wash the pointer out with it.
-$cursorForm = New-Object System.Windows.Forms.Form
+$cursorForm = New-Object CuaGlow.ClickThroughForm
 $cursorForm.FormBorderStyle = 'None'
 $cursorForm.ShowInTaskbar = $false
 $cursorForm.TopMost = $true
 $cursorForm.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
 $cursorForm.BackColor = $fuchsia
 $cursorForm.TransparencyKey = $fuchsia
-$cursorForm.Size = New-Object System.Drawing.Size(48, 48)
-$cursorForm.DoubleBuffered = $true
+$cursorForm.Size = New-Object System.Drawing.Size(96, 96)
 $cursorForm.Add_HandleCreated({
   $style = [CuaGlow.Native]::GetWindowLong($cursorForm.Handle, -20)
   [void][CuaGlow.Native]::SetWindowLong($cursorForm.Handle, -20, ($style -bor 0x20 -bor 0x80 -bor 0x08000000))
@@ -137,17 +157,19 @@ $cursorForm.Add_HandleCreated({
 $cursorForm.Add_Paint({
   param($sender, $e)
   $g = $e.Graphics
-  # solid strokes only: any alpha here would blend with the colour key and glow magenta
+  # solid strokes only: alpha would blend with the colour key and glow magenta
   $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::None
-  $unit = 2.2
-  $shape = @( @(1, 1), @(1, 20), @(6, 15), @(10, 24), @(13, 22), @(9, 14), @(16, 14) )
+  $unit = 3.4
+  $pad = 8
+  $shape = @( @(1, 1), @(1, 21), @(6.5, 15.5), @(10.5, 25), @(14, 23), @(9.5, 14.5), @(17, 14.5) )
   $points = @()
   foreach ($p in $shape) {
-    $points += New-Object System.Drawing.PointF(($p[0] * $unit), ($p[1] * $unit))
+    $points += New-Object System.Drawing.PointF(($p[0] * $unit + $pad), ($p[1] * $unit + $pad))
   }
   foreach ($halo in @(
-    @{ width = 10; color = [System.Drawing.Color]::FromArgb(122, 145, 255) },
-    @{ width = 6; color = [System.Drawing.Color]::FromArgb(160, 182, 255) }
+    @{ width = 16; color = [System.Drawing.Color]::FromArgb(96, 120, 255) },
+    @{ width = 11; color = [System.Drawing.Color]::FromArgb(120, 145, 255) },
+    @{ width = 7; color = [System.Drawing.Color]::FromArgb(152, 174, 255) }
   )) {
     $pen = New-Object System.Drawing.Pen($halo.color, $halo.width)
     $pen.LineJoin = [System.Drawing.Drawing2D.LineJoin]::Round
@@ -157,12 +179,17 @@ $cursorForm.Add_Paint({
   $fill = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(77, 107, 254))
   $g.FillPolygon($fill, $points)
   $fill.Dispose()
-  $rim = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(214, 226, 255), 2)
+  $rim = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(226, 236, 255), 3)
   $rim.LineJoin = [System.Drawing.Drawing2D.LineJoin]::Round
   $g.DrawPolygon($rim, $points)
   $rim.Dispose()
 })
 $cursorForm.Show()
+foreach ($wnd in @($form.Handle, $cursorForm.Handle)) {
+  $current = [CuaGlow.Native]::GetWindowLong($wnd, -20)
+  [void][CuaGlow.Native]::SetWindowLong($wnd, -20, ($current -bor 0x80000 -bor 0x20 -bor 0x80 -bor 0x08000000))
+  Note ('style hwnd=' + $wnd + ' ex=' + ('0x{0:X}' -f [CuaGlow.Native]::GetWindowLong($wnd, -20)))
+}
 
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 45
