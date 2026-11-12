@@ -32,22 +32,20 @@ function Note([string]$text) {
 try { [System.IO.File]::WriteAllText($PidPath, [string]$PID, (New-Object System.Text.UTF8Encoding($false))) } catch {}
 Note "start pid=$PID"
 
-$spritePath = Join-Path $PSScriptRoot 'cursor-arrow.png'
+$spritePath = Join-Path $PSScriptRoot 'cursor-neon.png'
 $sprite = $null
 try { if (Test-Path -LiteralPath $spritePath) { $sprite = [System.Drawing.Image]::FromFile($spritePath) } } catch {}
 
 $fuchsia = [System.Drawing.Color]::Fuchsia
 # short, light ramp: 8 strokes of 6 px, fading towards the middle of the screen
-$bands = @(
-  [System.Drawing.Color]::FromArgb(77, 107, 254),
-  [System.Drawing.Color]::FromArgb(97, 125, 255),
-  [System.Drawing.Color]::FromArgb(117, 143, 255),
-  [System.Drawing.Color]::FromArgb(137, 161, 255),
-  [System.Drawing.Color]::FromArgb(157, 179, 255),
-  [System.Drawing.Color]::FromArgb(177, 197, 255),
-  [System.Drawing.Color]::FromArgb(197, 213, 255),
-  [System.Drawing.Color]::FromArgb(217, 229, 255)
-)
+$bands = @()
+for ($i = 0; $i -lt 24; $i++) {
+  $t = $i / 23.0
+  $r = [int](77 + (201 - 77) * $t)
+  $g = [int](107 + (214 - 107) * $t)
+  $b = [int](254 + (255 - 254) * $t)
+  $bands += [System.Drawing.Color]::FromArgb($r, $g, $b)
+}
 $virtual = [System.Windows.Forms.SystemInformation]::VirtualScreen
 
 $form = New-Object System.Windows.Forms.Form
@@ -59,6 +57,7 @@ $form.BackColor = $fuchsia
 $form.TransparencyKey = $fuchsia
 $form.Bounds = $virtual
 $form.DoubleBuffered = $true
+$form.Opacity = 0.15
 $form.Add_HandleCreated({
   $style = [CuaGlow.Native]::GetWindowLong($form.Handle, -20)
   [void][CuaGlow.Native]::SetWindowLong($form.Handle, -20, ($style -bor 0x20 -bor 0x80 -bor 0x08000000))
@@ -81,7 +80,7 @@ $form.Add_Paint({
   $w = $sender.ClientSize.Width
   $h = $sender.ClientSize.Height
 
-  $thickness = 6
+  $thickness = 2
   $inset = 0
   foreach ($color in $bands) {
     $pen = New-Object System.Drawing.Pen($color, $thickness)
@@ -91,14 +90,6 @@ $form.Add_Paint({
     $inset += $thickness
   }
 
-  if ($script:curX -ge 0) {
-    $x = [single]($script:curX - $virtual.X)
-    $y = [single]($script:curY - $virtual.Y)
-    if ($sprite) {
-      $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
-      $g.DrawImage($sprite, ($x - 1), ($y - 1), 40, 40)
-    }
-  }
 })
 
 function Read-Snapshot {
@@ -128,6 +119,51 @@ function ForegroundMatches($snapshot) {
 
 $form.Show()
 
+# The cursor lives in its own window: the glow form is translucent as a whole, and
+# that would wash the pointer out with it.
+$cursorForm = New-Object System.Windows.Forms.Form
+$cursorForm.FormBorderStyle = 'None'
+$cursorForm.ShowInTaskbar = $false
+$cursorForm.TopMost = $true
+$cursorForm.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
+$cursorForm.BackColor = $fuchsia
+$cursorForm.TransparencyKey = $fuchsia
+$cursorForm.Size = New-Object System.Drawing.Size(48, 48)
+$cursorForm.DoubleBuffered = $true
+$cursorForm.Add_HandleCreated({
+  $style = [CuaGlow.Native]::GetWindowLong($cursorForm.Handle, -20)
+  [void][CuaGlow.Native]::SetWindowLong($cursorForm.Handle, -20, ($style -bor 0x20 -bor 0x80 -bor 0x08000000))
+})
+$cursorForm.Add_Paint({
+  param($sender, $e)
+  $g = $e.Graphics
+  # solid strokes only: any alpha here would blend with the colour key and glow magenta
+  $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::None
+  $unit = 2.2
+  $shape = @( @(1, 1), @(1, 20), @(6, 15), @(10, 24), @(13, 22), @(9, 14), @(16, 14) )
+  $points = @()
+  foreach ($p in $shape) {
+    $points += New-Object System.Drawing.PointF(($p[0] * $unit), ($p[1] * $unit))
+  }
+  foreach ($halo in @(
+    @{ width = 10; color = [System.Drawing.Color]::FromArgb(122, 145, 255) },
+    @{ width = 6; color = [System.Drawing.Color]::FromArgb(160, 182, 255) }
+  )) {
+    $pen = New-Object System.Drawing.Pen($halo.color, $halo.width)
+    $pen.LineJoin = [System.Drawing.Drawing2D.LineJoin]::Round
+    $g.DrawPolygon($pen, $points)
+    $pen.Dispose()
+  }
+  $fill = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(77, 107, 254))
+  $g.FillPolygon($fill, $points)
+  $fill.Dispose()
+  $rim = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(214, 226, 255), 2)
+  $rim.LineJoin = [System.Drawing.Drawing2D.LineJoin]::Round
+  $g.DrawPolygon($rim, $points)
+  $rim.Dispose()
+})
+$cursorForm.Show()
+
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 45
 $timer.add_Tick({
@@ -156,6 +192,14 @@ $timer.add_Tick({
       $script:curX = $script:goalX
       $script:curY = $script:goalY
     }
+  }
+
+  if ($script:curX -ge 0) {
+    $cursorForm.Location = New-Object System.Drawing.Point([int]($script:curX - 4), [int]($script:curY - 4))
+    if ($visible -and -not $cursorForm.Visible) { $cursorForm.Show() }
+    if (-not $visible -and $cursorForm.Visible) { $cursorForm.Hide() }
+  } else {
+    if ($cursorForm.Visible) { $cursorForm.Hide() }
   }
 
   $moved = [Math]::Abs($script:curX - $script:lastPaint.x) -gt 0.8 -or [Math]::Abs($script:curY - $script:lastPaint.y) -gt 0.8
