@@ -60,7 +60,7 @@ const attachmentStore = {
 
 const wired = makeContext({ attachments: attachmentStore });
 apply(wired.ctx, {});
-wired.injections[0].callback(wired.ctx);
+wired.injections.find((i) => i.services.includes('tools')).callback(wired.ctx);
 await wired.effects[0].callback();
 await new Promise((resolve) => setTimeout(resolve, 300));
 
@@ -91,7 +91,7 @@ check('text block stays first', blocks[0] && blocks[0].type === 'text');
 // Without an attachment service the tool must still answer with the path only.
 const plain = makeContext();
 apply(plain.ctx, {});
-plain.injections[0].callback(plain.ctx);
+plain.injections.find((i) => i.services.includes('tools')).callback(plain.ctx);
 await plain.effects[0].callback();
 await new Promise((resolve) => setTimeout(resolve, 200));
 const plainShot = plain.registered.find((tool) => tool.name === 'computer_shot');

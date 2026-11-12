@@ -130,6 +130,20 @@ function stripOverlay(text) {
 
 // Caption shown next to the cursor: what the agent is about to do, in a few words.
 function captionFor(name, args = {}) {
+  // The agent supplies a 1-3 word intent; the caption shows that instead of
+  // coordinates, so the user reads the purpose of the action.
+  const intent = String(args.intent || '').trim().slice(0, 40);
+  if (intent) {
+    const verb = {
+      computer_shot: 'screenshot', computer_click: 'click', computer_drag: 'drag',
+      computer_type: 'type', computer_key: 'key', computer_scroll: 'scroll',
+      computer_focus: 'focus', computer_window: 'window', computer_launch: 'launch',
+      computer_tabs: 'browser tabs', computer_tab: 'tab', computer_wait: 'wait',
+      computer_record: 'record', computer_video: 'record', computer_ocr: 'read text',
+      computer_uitree: 'ui tree', computer_ui_action: 'ui action', computer_cdp: 'browser'
+    }[name] || name.replace(/^computer_/, '');
+    return `${verb}: ${intent}`;
+  }
   const target = args.window || (args.pid ? `pid ${args.pid}` : '');
   const where = target ? ` · ${String(target).slice(0, 34)}` : '';
   switch (name) {
@@ -203,6 +217,8 @@ const CUA_PROMPT = [
   '- If the user presses ESC, the next call fails with STOPPED and the marker stays for 15',
   '  minutes: ask whether to continue, then retry with user_ready: true.',
   '- Never fight the user for the cursor: if they take over, stop and ask.',
+  '- Give input tools a short `intent` (1-3 words: "open settings", "send message"): it is what',
+  '  the on-screen caption shows next to the cursor, so the user sees the purpose, not coordinates.',
 ].join('\n');
 
 // ------------------------------------------------------------------- catalogue
@@ -232,6 +248,7 @@ export const TOOLS = [
     name: 'computer_click',
     description: 'Click at a point. With "window" given, coordinates are window-relative and the window is focused first; otherwise they are screen coordinates.',
     parameters: {
+      intent: { type: 'string', description: 'One to three words of intent for the on-screen caption, e.g. "open settings", "send message"' },
       user_ready: { type: 'boolean', description: 'Set true only after the user agreed to let the agent drive the whole screen (not needed when window/pid is given)' },
       window: { type: 'string' },
       pid: { type: 'integer', description: 'Target this process id' },
@@ -246,6 +263,7 @@ export const TOOLS = [
     name: 'computer_drag',
     description: 'Press, move and release between two points (coordinates are window-relative when "window" is given).',
     parameters: {
+      intent: { type: 'string', description: 'One to three words of intent for the on-screen caption, e.g. "open settings", "send message"' },
       user_ready: { type: 'boolean', description: 'Set true only after the user agreed to let the agent drive the whole screen (not needed when window/pid is given)' },
       window: { type: 'string' },
       pid: { type: 'integer', description: 'Target this process id' },
@@ -261,6 +279,7 @@ export const TOOLS = [
     name: 'computer_type',
     description: 'Type text into the focused control. Non-ASCII needs unicode: true (plain typing uses SendKeys and mangles it).',
     parameters: {
+      intent: { type: 'string', description: 'One to three words of intent for the on-screen caption, e.g. "open settings", "send message"' },
       user_ready: { type: 'boolean', description: 'Set true only after the user agreed to let the agent drive the whole screen (not needed when window/pid is given)' },
       text: { type: 'string', description: 'Text to type' },
       unicode: { type: 'boolean', description: 'SendInput with unicode codepoints (non-ASCII)' }
@@ -271,6 +290,7 @@ export const TOOLS = [
     name: 'computer_key',
     description: 'Send a key combination in SendKeys syntax: "^c" copy, "%{F4}" alt+F4, "{ENTER}", "^+{ESC}".',
     parameters: {
+      intent: { type: 'string', description: 'One to three words of intent for the on-screen caption, e.g. "open settings", "send message"' },
       user_ready: { type: 'boolean', description: 'Set true only after the user agreed to let the agent drive the whole screen (not needed when window/pid is given)' }, text: { type: 'string', description: 'SendKeys sequence' } },
     run: (a) => ({ action: 'key', text: a.text })
   },
@@ -278,6 +298,7 @@ export const TOOLS = [
     name: 'computer_scroll',
     description: 'Scroll the mouse wheel at a point. Negative delta scrolls down.',
     parameters: {
+      intent: { type: 'string', description: 'One to three words of intent for the on-screen caption, e.g. "open settings", "send message"' },
       user_ready: { type: 'boolean', description: 'Set true only after the user agreed to let the agent drive the whole screen (not needed when window/pid is given)' },
       window: { type: 'string' },
       pid: { type: 'integer', description: 'Target this process id' },
