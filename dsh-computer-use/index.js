@@ -128,9 +128,9 @@ function stripOverlay(text) {
 }
 
 
-// Some callers deliver UTF-8 text that was already decoded as CP1251, turning
-// "снять" into "СЃРЅСЏС‚СЊ". Genuine Cyrillic never survives that byte mapping as
-// valid UTF-8, so a successful strict decode is proof of mojibake and undoes it.
+// Some callers deliver UTF-8 text that was already decoded as CP1251, which turns
+// any non-ASCII window title into mojibake. A strict UTF-8 decode of the reversed
+// bytes only succeeds for real text, so it is a safe repair.
 const CP1251_BYTES = (() => {
   try {
     const decoder = new TextDecoder('windows-1251');
@@ -176,11 +176,11 @@ function captionFor(name, args = {}) {
     return `${verb}: ${intent}`;
   }
   const target = args.window || (args.pid ? `pid ${args.pid}` : '');
-  const where = target ? ` · ${String(target).slice(0, 34)}` : '';
+  const where = target ? ` - ${String(target).slice(0, 34)}` : '';
   switch (name) {
     case 'computer_shot': return `screenshot${where}`;
     case 'computer_click': return `click ${args.x ?? '?'},${args.y ?? '?'}${where}`;
-    case 'computer_drag': return `drag ${args.x ?? '?'},${args.y ?? '?'} → ${args.x2 ?? '?'},${args.y2 ?? '?'}`;
+    case 'computer_drag': return `drag ${args.x ?? '?'},${args.y ?? '?'} -> ${args.x2 ?? '?'},${args.y2 ?? '?'}`;
     case 'computer_type': return `type "${String(args.text || '').slice(0, 24)}"`;
     case 'computer_key': return `key ${String(args.text || '').slice(0, 20)}`;
     case 'computer_scroll': return `scroll ${args.delta ?? ''}${where}`;
@@ -195,7 +195,7 @@ function captionFor(name, args = {}) {
     case 'computer_ocr': return 'read text (ocr)';
     case 'computer_uitree': return `ui tree${where}`;
     case 'computer_ui_action': return `ui ${args.kind || 'act'} "${String(args.name || '').slice(0, 20)}"`;
-    case 'computer_cdp': return `browser ${args.action || ''}${args.target ? ` · ${String(args.target).slice(0, 24)}` : ''}`;
+    case 'computer_cdp': return `browser ${args.action || ''}${args.target ? ` - ${String(args.target).slice(0, 24)}` : ''}`;
     default: return name.replace(/^computer_/, '');
   }
 }
@@ -248,8 +248,9 @@ const CUA_PROMPT = [
   '- If the user presses ESC, the next call fails with STOPPED and the marker stays for 15',
   '  minutes: ask whether to continue, then retry with user_ready: true.',
   '- Never fight the user for the cursor: if they take over, stop and ask.',
-  '- Give input tools a short `intent` (1-3 words: "open settings", "send message"): it is what',
-  '  the on-screen caption shows next to the cursor, so the user sees the purpose, not coordinates.',
+  '- Give input tools a short `intent` (1-3 ENGLISH words: "open settings", "send message"): it is',
+  '  what the on-screen caption shows next to the cursor. Write captions, labels and tool text in',
+  '  English only, even when the user writes in another language.',
 ].join('\n');
 
 // ------------------------------------------------------------------- catalogue
@@ -279,7 +280,7 @@ export const TOOLS = [
     name: 'computer_click',
     description: 'Click at a point. With "window" given, coordinates are window-relative and the window is focused first; otherwise they are screen coordinates.',
     parameters: {
-      intent: { type: 'string', description: 'One to three words of intent for the on-screen caption, e.g. "open settings", "send message"' },
+      intent: { type: 'string', description: 'One to three ENGLISH words of intent for the on-screen caption, e.g. "open settings", "send message". Never use another language: captions are English-only.' },
       user_ready: { type: 'boolean', description: 'Set true only after the user agreed to let the agent drive the whole screen (not needed when window/pid is given)' },
       window: { type: 'string' },
       pid: { type: 'integer', description: 'Target this process id' },

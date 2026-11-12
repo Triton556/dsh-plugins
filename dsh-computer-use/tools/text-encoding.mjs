@@ -1,5 +1,6 @@
-// The caption text must survive a CP1251 round trip: callers sometimes hand us
-// UTF-8 that was already decoded as CP1251 ("снять" -> "СЃРЅСЏС‚СЊ").
+// Caption text must survive a CP1251 round trip: some callers hand us UTF-8 that was
+// already decoded as CP1251, which turns any non-ASCII title into mojibake.
+// The fixtures are escapes so this file stays plain ASCII.
 //
 // Usage: node tools/text-encoding.mjs
 import { readFileSync } from 'node:fs';
@@ -20,11 +21,14 @@ const check = (label, ok, detail = '') => {
   console.log(`  FAIL ${label}${detail ? ` :: ${detail}` : ''}`);
 };
 
-const broken = 'СЃРЅСЏС‚СЊ РѕРєРЅРѕ С‡Р°С‚Р°';
-check('mojibake is repaired', repairText(broken) === 'снять окно чата', repairText(broken));
-check('clean Cyrillic is left alone', repairText('снять окно чата') === 'снять окно чата');
-check('English is left alone', repairText('open settings') === 'open settings');
-check('mixed Latin + Cyrillic mojibake is repaired', repairText('click: РѕС‚РєСЂС‹С‚СЊ') === 'click: открыть', repairText('click: РѕС‚РєСЂС‹С‚СЊ'));
+// mojibake of "\u0441\u043d\u044f\u0442\u044c \u043e\u043a\u043d\u043e" (a window title)
+const broken = '\u0421\u0403\u0420\u0405\u0421\u040f\u0421\u201a\u0421\u040a \u0420\u0455\u0420\u0454\u0420\u0405\u0420\u0455';
+const expected = '\u0441\u043d\u044f\u0442\u044c \u043e\u043a\u043d\u043e';
+
+check('mojibake is repaired', repairText(broken) === expected, repairText(broken));
+check('clean text is left alone', repairText(expected) === expected);
+check('English is never touched', repairText('screenshot: chat window') === 'screenshot: chat window');
+check('mixed English + mojibake is repaired', repairText(`click: ${broken}`) === `click: ${expected}`, repairText(`click: ${broken}`));
 check('empty input stays empty', repairText('') === '');
 check('undefined becomes empty', repairText(undefined) === '');
 

@@ -8,7 +8,7 @@ const CASES = [
   "single'quote",
   'semi;colon $(calc); `backtick`',
   'dollar $env:PATH %PATH%',
-  'unicode: привет мир — ✓',
+  'unicode: \u043f\u0440\u0438\u0432\u0435\u0442 \u043c\u0438\u0440 - \u2713',
   'newlines\nsecond line\ttab',
   'amp & pipe | redirect > nul'
 ];

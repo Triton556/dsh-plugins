@@ -1,17 +1,17 @@
 ---
 name: computer-use
-description: Drive the desktop from an agent session — list windows, take occlusion-proof screenshots of a specific app, click/drag/type, switch Chrome tabs, read the clipboard, OCR, record frames, and use the Chrome DevTools Protocol. Use when a task needs a real GUI, a screenshot of another app, or profiling of a Chromium/Electron window.
+description: Drive the desktop from an agent session - list windows, take occlusion-proof screenshots of a specific app, click/drag/type, switch Chrome tabs, read the clipboard, OCR, record frames, and use the Chrome DevTools Protocol. Use when a task needs a real GUI, a screenshot of another app, or profiling of a Chromium/Electron window.
 ---
 
 # Computer use
 
 Tools are registered by the `dsh-computer-use` bundle. Every tool returns
-`{ ok, text }`; screenshots return a PNG **path** — read it with the image tool.
+`{ ok, text }`; screenshots return a PNG **path** - read it with the image tool.
 
 ## The reliable loop
 
-1. `computer_windows` — find the window by title/process.
-2. `computer_shot` with `method: "print"` — captures the window **even when it is
+1. `computer_windows` - find the window by title/process.
+2. `computer_shot` with `method: "print"` - captures the window **even when it is
    covered** by other apps (Chromium/Electron render themselves into a DC).
 3. Act: `computer_click` / `computer_drag` / `computer_type` / `computer_key` /
    `computer_scroll`. With `window` given, coordinates are window-relative and
@@ -30,18 +30,18 @@ Never raise a window just to look at it: `method: "print"` does not need focus.
 then read a few frames.
 
 **Chrome tabs without touching the mouse**:
-`computer_tabs` → title list; `computer_tab { title: "docs" }` selects it.
+`computer_tabs` -> title list; `computer_tab { title: "docs" }` selects it.
 
 **Wait instead of polling**:
 `computer_wait { window: "Claude", text: "Sign in", timeout: 15000 }`
 
-**Non-ASCII typing**: `computer_type { text: "привет", unicode: true }`
+**Non-ASCII typing**: `computer_type { text: "caf\u00e9", unicode: true }`
 (plain typing uses SendKeys and mangles non-ASCII).
 
 **Read a console** without OCR: focus the window, `computer_key { text: "^a^c" }`,
 then `computer_clipboard` and read the text.
 
-**OCR** (canvas, video, games): `computer_ocr { path: "<png>" }` — Windows OCR,
+**OCR** (canvas, video, games): `computer_ocr { path: "<png>" }` - Windows OCR,
 no network.
 
 ## Chrome DevTools Protocol
@@ -49,11 +49,11 @@ no network.
 Needs a Chromium/Electron started with `--remote-debugging-port=<port>`:
 
 - `computer_launch { path: "C:/.../chrome.exe", args: "--remote-debugging-port=9222 --user-data-dir=C:/tmp/cdp-profile" }`
-- `computer_cdp { action: "list" }` — targets
+- `computer_cdp { action: "list" }` - targets
 - `computer_cdp { action: "eval", expression: "document.title" }`
-- `computer_cdp { action: "dom" }` — `document.body.outerHTML`
-- `computer_cdp { action: "shot", path: "C:/tmp/tab.png" }` — tab pixels, never occluded
-- `computer_cdp { action: "perf", duration: 3000 }` — frame timing p50/p95/max
+- `computer_cdp { action: "dom" }` - `document.body.outerHTML`
+- `computer_cdp { action: "shot", path: "C:/tmp/tab.png" }` - tab pixels, never occluded
+- `computer_cdp { action: "perf", duration: 3000 }` - frame timing p50/p95/max
 
 CDP is the only way to profile our own GUI in a trustworthy way: window
 screenshots are subject to Chromium throttling of occluded windows.
@@ -63,13 +63,13 @@ screenshots are subject to Chromium throttling of occluded windows.
 - UI Automation trees of Electron apps are empty unless the app enables
   accessibility (`--force-renderer-accessibility`).
 - `computer_focus` is best-effort: Windows foreground lock may refuse.
-- Mouse/keyboard go to the real desktop — do not fight the human for the cursor.
+- Mouse/keyboard go to the real desktop - do not fight the human for the cursor.
 ## Working BEHIND other windows (no focus, no cursor)
 
 Two paths, pick by app type.
 
 **Chromium / Electron apps** (Chrome, our DSH, Claude Desktop): start them with a
-debug port and drive them entirely in the background — no window raise, no
+debug port and drive them entirely in the background - no window raise, no
 cursor movement, no focus steal:
 
 ```
@@ -101,7 +101,7 @@ computer_ui_action { window: "Notepad", name: "File", kind: "invoke" }
 computer_ui_action { window: "Form", name: "Email", kind: "value", value: "a@b.c" }
 ```
 
-Patterns tried in order: invoke → toggle → select → expand → value. Real mouse
+Patterns tried in order: invoke -> toggle -> select -> expand -> value. Real mouse
 input (`computer_click`) is the fallback and DOES need the window in front.
 ## Launch without covering the user
 
@@ -116,5 +116,5 @@ computer_launch { path: "C:/.../chrome.exe", park: true,
 computer_cdp { port: 9471, action: "list" }        // works while parked
 ```
 
-End-to-end scenario (launch → navigate → background click → type → screenshot →
-trace → park) is reproducible with `node tools/scenario.mjs`.
+End-to-end scenario (launch -> navigate -> background click -> type -> screenshot ->
+trace -> park) is reproducible with `node tools/scenario.mjs`.

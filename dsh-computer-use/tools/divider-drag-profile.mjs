@@ -7,7 +7,7 @@ import { writeFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 const port = Number(process.argv[2] || 9511);
-const sessionTitle = process.argv[3] || 'Завершение';
+const sessionTitle = process.argv[3] || 'Session';
 const artifactPath = process.argv[4] || 'artifacts/plan.html';
 const settleMs = Number(process.argv[5] || 3) * 1000;
 
