@@ -102,15 +102,19 @@ function ensureOverlay() {
 // it is visible (only while that window is in the foreground, or the desktop is).
 function pushOverlay(hwnd, rect, click, label, mode) {
   try {
+    const screenMode = mode === 'screen';
     const point = String(click || '').split(',').map(Number);
+    const box = String(rect || '').split(',').map(Number);
     const state = {
       updated: Date.now(),
       ttlMs: OVERLAY_TTL_MS,
-      screen: false,
-      target: { hwnd: Number(hwnd) || 0, rect: String(rect).split(',').map(Number) },
+      // A whole-screen run has no window to watch: the banner must stay up while
+      // the agent works, regardless of which app happens to be in front.
+      screen: screenMode,
+      target: { hwnd: Number(hwnd) || 0, rect: box.length === 4 && box.every(Number.isFinite) ? box : [0, 0, 0, 0] },
       cursor: Number.isFinite(point[0]) && Number.isFinite(point[1]) ? { x: point[0], y: point[1] } : undefined,
       label: repairText(label).slice(0, 48),
-      mode: mode === 'screen' ? 'screen' : 'window'
+      mode: screenMode ? 'screen' : 'window'
     };
     writeFileSync(OVERLAY_STATE, JSON.stringify(state), 'utf8');
     ensureOverlay();
@@ -599,7 +603,16 @@ export function apply(ctx, config = {}) {
               const result = await engine(engineArgs);
               if (result && result.text) {
                 const parsed = stripOverlay(result.text);
-                if (parsed.rect && CUA_OVERLAY) pushOverlay(parsed.hwnd, parsed.rect, parsed.click, captionFor(spec.name, args), screenWide || args.window === undefined && args.pid === undefined ? 'screen' : 'window');
+                // Whole-screen calls resolve no window geometry, so the state is
+                // written from the tool arguments: the banner has to appear too.
+                const screenOnly = !args.window && !args.pid;
+                const caption = captionFor(spec.name, args);
+                if (parsed.rect && CUA_OVERLAY) {
+                  pushOverlay(parsed.hwnd, parsed.rect, parsed.click, caption, screenOnly ? 'screen' : 'window');
+                } else if (screenOnly && CUA_OVERLAY) {
+                  const point = Number.isFinite(args.x) && Number.isFinite(args.y) ? `${args.x},${args.y}` : '';
+                  pushOverlay(0, '', point, caption, 'screen');
+                }
                 if (parsed.rect) result.text = parsed.text;
               }
               try {
