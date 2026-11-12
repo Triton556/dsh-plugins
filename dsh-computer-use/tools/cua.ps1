@@ -543,7 +543,11 @@ switch ($Action) {
       Start-Sleep -Milliseconds 120
       Select-TabItem $match $hw
       Start-Sleep -Milliseconds 200
+      # The indicator draws its arrow over this tab's icon: emit the icon rect.
+      $tr = $match.Current.BoundingRectangle
+      $icon = "{0},{1},{2},{3}" -f ([int]($tr.Left + 10)), ([int]($tr.Top + 3)), ([int]($tr.Left + 34)), ([int]($tr.Bottom - 3))
       "selected tab: $($match.Current.Name) in hwnd=$($t.hwnd)"
+      "[overlay-tab] hwnd=$($t.hwnd) rect=$icon"
       $done = $true
       break
     }
