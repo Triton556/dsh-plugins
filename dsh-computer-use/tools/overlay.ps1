@@ -158,33 +158,20 @@ $banner.Child = $bannerStack
 $banner.Visibility = 'Collapsed'
 [void]$canvas.Children.Add($banner)
 
-# Arrow under the tab icon: a ring around the icon plus an upward arrowhead below
-# it (browser tabs sit at the top edge, so the arrow goes down, not up).
+# Tab badge: a small DeepSeek cursor sitting on the favicon of the tab in use.
 $tabMarker = New-Object System.Windows.Controls.Canvas
-$tabMarker.Width = 40
-$tabMarker.Height = 62
-$tabRing = New-Object System.Windows.Shapes.Rectangle
-$tabRing.Width = 28
-$tabRing.Height = 28
-$tabRing.RadiusX = 6
-$tabRing.RadiusY = 6
-$tabRing.Stroke = New-Object System.Windows.Media.SolidColorBrush([System.Windows.Media.Color]::FromArgb(240, 77, 107, 254))
-$tabRing.StrokeThickness = 2.5
-[System.Windows.Controls.Canvas]::SetLeft($tabRing, 6)
-[System.Windows.Controls.Canvas]::SetTop($tabRing, 1)
-[void]$tabMarker.Children.Add($tabRing)
-$tabArrow = New-Object System.Windows.Shapes.Polygon
-$tabPoints = New-Object System.Windows.PointCollection
-# written explicitly: @() flattens nested arrays, which once turned these into a flat line
-[void]$tabPoints.Add((New-Object System.Windows.Point 20, 33))
-[void]$tabPoints.Add((New-Object System.Windows.Point 12, 45))
-[void]$tabPoints.Add((New-Object System.Windows.Point 28, 45))
-$tabArrow.Points = $tabPoints
-$tabArrow.Fill = New-Object System.Windows.Media.SolidColorBrush([System.Windows.Media.Color]::FromArgb(255, 77, 107, 254))
-$tabArrow.Stroke = New-Object System.Windows.Media.SolidColorBrush([System.Windows.Media.Color]::FromArgb(255, 226, 236, 255))
-$tabArrow.StrokeThickness = 2
-$tabArrow.StrokeLineJoin = [System.Windows.Media.PenLineJoin]::Round
-[void]$tabMarker.Children.Add($tabArrow)
+$tabMarker.Width = 26
+$tabMarker.Height = 26
+$tabBadge = New-Object System.Windows.Controls.Image
+if ($bitmap) {
+  $tabBadge.Source = $bitmap
+}
+$tabBadge.Width = 24
+$tabBadge.Height = 24
+$tabBadge.Opacity = 0.96
+[System.Windows.Controls.Canvas]::SetLeft($tabBadge, 1)
+[System.Windows.Controls.Canvas]::SetTop($tabBadge, 1)
+[void]$tabMarker.Children.Add($tabBadge)
 $tabMarker.Visibility = 'Collapsed'
 [void]$canvas.Children.Add($tabMarker)
 
@@ -284,11 +271,13 @@ $timer.Add_Tick({
   $tabOk = $visible -and $tabRect -and @($tabRect).Count -eq 4
   $tabMarker.Visibility = if ($tabOk) { 'Visible' } else { 'Collapsed' }
   if ($tabOk) {
+    # centre the 26 px badge on the favicon area
     $iconX = [double]$tabRect[0] - $left
     $iconY = [double]$tabRect[1] - $top
-    # the ring covers the icon; the arrow hangs below it
-    [System.Windows.Controls.Canvas]::SetLeft($tabMarker, ($iconX - 7))
-    [System.Windows.Controls.Canvas]::SetTop($tabMarker, ($iconY - 2))
+    $iconW = [double]$tabRect[2] - [double]$tabRect[0]
+    $iconH = [double]$tabRect[3] - [double]$tabRect[1]
+    [System.Windows.Controls.Canvas]::SetLeft($tabMarker, ($iconX + ($iconW - 26) / 2))
+    [System.Windows.Controls.Canvas]::SetTop($tabMarker, ($iconY + ($iconH - 26) / 2))
   }
 
   if ($visible -and $snapshot.cursor) {
