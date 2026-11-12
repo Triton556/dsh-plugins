@@ -86,16 +86,16 @@ function overlayAlive() {
 
 function ensureOverlay() {
   if (overlayAlive()) return;
-  try {
-    const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', fileURLToPath(OVERLAY_SCRIPT)], {
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true
-    });
-    child.unref();
-  } catch (error) {
-    console.warn('[dsh-computer-use] overlay start failed:', String(error && error.message || error).slice(0, 160));
-  }
+  // A detached Node spawn yields a process that exits before it can create its
+  // window, so the PowerShell engine starts the daemon with Start-Process instead.
+  void (async () => {
+    try {
+      const { engine } = await import('./tools/engine.mjs');
+      await engine({ action: 'overlay', Script: fileURLToPath(OVERLAY_SCRIPT) });
+    } catch (error) {
+      console.warn('[dsh-computer-use] overlay start failed:', String(error && error.message || error).slice(0, 160));
+    }
+  })();
 }
 
 // Show the controlled window + action point; the indicator itself decides whether
@@ -109,7 +109,7 @@ function pushOverlay(hwnd, rect, click, label, mode) {
       screen: false,
       target: { hwnd: Number(hwnd) || 0, rect: String(rect).split(',').map(Number) },
       cursor: Number.isFinite(point[0]) && Number.isFinite(point[1]) ? { x: point[0], y: point[1] } : undefined,
-      label: String(label || '').slice(0, 48),
+      label: repairText(label).slice(0, 48),
       mode: mode === 'screen' ? 'screen' : 'window'
     };
     writeFileSync(OVERLAY_STATE, JSON.stringify(state), 'utf8');
@@ -128,11 +128,42 @@ function stripOverlay(text) {
 }
 
 
+// Some callers deliver UTF-8 text that was already decoded as CP1251, turning
+// "снять" into "СЃРЅСЏС‚СЊ". Genuine Cyrillic never survives that byte mapping as
+// valid UTF-8, so a successful strict decode is proof of mojibake and undoes it.
+const CP1251_BYTES = (() => {
+  try {
+    const decoder = new TextDecoder('windows-1251');
+    const map = new Map();
+    for (let byte = 0; byte < 256; byte += 1) map.set(decoder.decode(Uint8Array.of(byte)), byte);
+    return map;
+  } catch (error) {
+    return null;
+  }
+})();
+
+function repairText(value) {
+  const text = String(value || '');
+  if (!CP1251_BYTES || !/[\u0400-\u04FF]/.test(text)) return text;
+  const bytes = [];
+  for (const char of text) {
+    const byte = CP1251_BYTES.get(char);
+    if (byte === undefined) return text;
+    bytes.push(byte);
+  }
+  try {
+    const decoded = new TextDecoder('utf-8', { fatal: true }).decode(Uint8Array.from(bytes));
+    return /[\u0400-\u04FF]/.test(decoded) ? decoded : text;
+  } catch (error) {
+    return text;
+  }
+}
+
 // Caption shown next to the cursor: what the agent is about to do, in a few words.
 function captionFor(name, args = {}) {
   // The agent supplies a 1-3 word intent; the caption shows that instead of
   // coordinates, so the user reads the purpose of the action.
-  const intent = String(args.intent || '').trim().slice(0, 40);
+  const intent = repairText(args.intent).trim().slice(0, 40);
   if (intent) {
     const verb = {
       computer_shot: 'screenshot', computer_click: 'click', computer_drag: 'drag',

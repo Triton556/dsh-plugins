@@ -1,3 +1,4 @@
+
 # DeepSeek computer-use indicator (WPF).
 #
 # WPF gives real per-pixel alpha, so the sprite keeps its soft glow (no dithering,
@@ -20,6 +21,9 @@ param(
   [int]$Depth = 72,
   [double]$CursorSize = 40
 )
+
+# boot marker: written before the heavy start-up work, so a silent death is visible
+try { Add-Content -LiteralPath (Join-Path $env:TEMP 'dsh-cua-overlay.log') -Value ((Get-Date -Format 'HH:mm:ss') + ' boot pid=$PID') } catch {}
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Xaml, System.Windows.Forms, System.Drawing
 

@@ -15,7 +15,7 @@
 # -X/-Y are relative to that window's client area.
 
 param(
-  [Parameter(Mandatory = $true)][ValidateSet('list','windows','tabs','tab','uitree','find','hit','shot','focus','activate','click','drag','type','key','keycombo','scroll','clipboard','wait','window','launch','record','video','ocr','uiact','info')][string]$Action,
+  [Parameter(Mandatory = $true)][ValidateSet('list','windows','tabs','tab','uitree','find','hit','shot','focus','activate','click','drag','type','key','keycombo','scroll','clipboard','wait','window','launch','record','video','ocr','uiact','info','overlay')][string]$Action,
   [string]$Path,
   [string]$Window,
   [string]$Text,
@@ -44,6 +44,7 @@ param(
   [switch]$Park,
   [ValidateSet('mp4','gif')][string]$Format = 'mp4',
   [int]$ProcessId = 0,
+  [string]$Script,
   [switch]$Overlay
 )
 
@@ -459,6 +460,23 @@ switch ($Action) {
     Get-Process | Where-Object { $_.MainWindowHandle -ne 0 } |
       Select-Object @{n='pid';e={$_.Id}}, @{n='proc';e={$_.ProcessName}}, @{n='title';e={$_.MainWindowTitle}}, @{n='hwnd';e={$_.MainWindowHandle}} |
       Sort-Object proc | Format-Table -AutoSize | Out-String -Width 200
+  }
+  'overlay' {
+    # Start the indicator daemon from PowerShell: a detached Node spawn produces a
+    # process that dies before it can create its window, while Start-Process works.
+    if (-not $Script -or -not (Test-Path -LiteralPath $Script)) { throw '-Script is required' }
+    $pidFile = Join-Path $env:TEMP 'dsh-cua-overlay.pid'
+    $running = $false
+    if (Test-Path -LiteralPath $pidFile) {
+      $existing = 0
+      [void][int]::TryParse((Get-Content -LiteralPath $pidFile -Raw).Trim(), [ref]$existing)
+      if ($existing -gt 0) { $running = [bool](Get-Process -Id $existing -ErrorAction SilentlyContinue) }
+    }
+    if (-not $running) {
+      Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$Script) -WindowStyle Hidden | Out-Null
+      Start-Sleep -Milliseconds 250
+    }
+    "overlay: " + $(if ($running) { 'already running' } else { 'started' })
   }
   'info' {
     $exStyle = [Cua.Native]::GetWindowLong($h, -20)
