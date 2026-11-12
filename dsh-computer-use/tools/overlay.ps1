@@ -54,7 +54,7 @@ function Note([string]$text) {
 try { [System.IO.File]::WriteAllText($PidPath, [string]$PID, (New-Object System.Text.UTF8Encoding($false))) } catch {}
 Note "start pid=$PID"
 
-$spritePath = Join-Path $PSScriptRoot 'cursor-neon.png'
+$spritePath = Join-Path $PSScriptRoot 'cursor-keyed.png'
 $sprite = $null
 try { if (Test-Path -LiteralPath $spritePath) { $sprite = [System.Drawing.Image]::FromFile($spritePath) } } catch {}
 
@@ -149,40 +149,19 @@ $cursorForm.TopMost = $true
 $cursorForm.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
 $cursorForm.BackColor = $fuchsia
 $cursorForm.TransparencyKey = $fuchsia
-$cursorForm.Size = New-Object System.Drawing.Size(96, 96)
+$cursorForm.Size = New-Object System.Drawing.Size(128, 128)
 $cursorForm.Add_HandleCreated({
   $style = [CuaGlow.Native]::GetWindowLong($cursorForm.Handle, -20)
   [void][CuaGlow.Native]::SetWindowLong($cursorForm.Handle, -20, ($style -bor 0x20 -bor 0x80 -bor 0x08000000))
 })
 $cursorForm.Add_Paint({
   param($sender, $e)
+  if (-not $sprite) { return }
   $g = $e.Graphics
-  # solid strokes only: alpha would blend with the colour key and glow magenta
-  $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::None
-  $unit = 3.4
-  $pad = 8
-  $shape = @( @(1, 1), @(1, 21), @(6.5, 15.5), @(10.5, 25), @(14, 23), @(9.5, 14.5), @(17, 14.5) )
-  $points = @()
-  foreach ($p in $shape) {
-    $points += New-Object System.Drawing.PointF(($p[0] * $unit + $pad), ($p[1] * $unit + $pad))
-  }
-  foreach ($halo in @(
-    @{ width = 16; color = [System.Drawing.Color]::FromArgb(96, 120, 255) },
-    @{ width = 11; color = [System.Drawing.Color]::FromArgb(120, 145, 255) },
-    @{ width = 7; color = [System.Drawing.Color]::FromArgb(152, 174, 255) }
-  )) {
-    $pen = New-Object System.Drawing.Pen($halo.color, $halo.width)
-    $pen.LineJoin = [System.Drawing.Drawing2D.LineJoin]::Round
-    $g.DrawPolygon($pen, $points)
-    $pen.Dispose()
-  }
-  $fill = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(77, 107, 254))
-  $g.FillPolygon($fill, $points)
-  $fill.Dispose()
-  $rim = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(226, 236, 255), 3)
-  $rim.LineJoin = [System.Drawing.Drawing2D.LineJoin]::Round
-  $g.DrawPolygon($rim, $points)
-  $rim.Dispose()
+  $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
+  $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+  # sprite is 96x96 with the tip at (13,9): draw so the tip lands on the cursor point
+  $g.DrawImage($sprite, 16, 16, 96, 96)
 })
 $cursorForm.Show()
 foreach ($wnd in @($form.Handle, $cursorForm.Handle)) {
