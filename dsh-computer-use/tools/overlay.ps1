@@ -158,22 +158,6 @@ $banner.Child = $bannerStack
 $banner.Visibility = 'Collapsed'
 [void]$canvas.Children.Add($banner)
 
-# Tab badge: a small DeepSeek cursor sitting on the favicon of the tab in use.
-$tabMarker = New-Object System.Windows.Controls.Canvas
-$tabMarker.Width = 26
-$tabMarker.Height = 26
-$tabBadge = New-Object System.Windows.Controls.Image
-if ($bitmap) {
-  $tabBadge.Source = $bitmap
-}
-$tabBadge.Width = 24
-$tabBadge.Height = 24
-$tabBadge.Opacity = 0.96
-[System.Windows.Controls.Canvas]::SetLeft($tabBadge, 1)
-[System.Windows.Controls.Canvas]::SetTop($tabBadge, 1)
-[void]$tabMarker.Children.Add($tabBadge)
-$tabMarker.Visibility = 'Collapsed'
-[void]$canvas.Children.Add($tabMarker)
 
 
 $window.Show()
@@ -262,23 +246,6 @@ $timer.Add_Tick({
     [System.Windows.Controls.Canvas]::SetTop($banner, [Math]::Max(24, $height * 0.12))
   }
 
-  # Tab marker: an arrow pointing at the browser tab in use (icon rect in screen
-  # coordinates), visible while that browser window is in front.
-  $tabRect = $null
-  if ($snapshot -and $snapshot.tab) {
-    $tabRect = if ($snapshot.tab.rect) { $snapshot.tab.rect } else { $snapshot.tab }
-  }
-  $tabOk = $visible -and $tabRect -and @($tabRect).Count -eq 4
-  $tabMarker.Visibility = if ($tabOk) { 'Visible' } else { 'Collapsed' }
-  if ($tabOk) {
-    # centre the 26 px badge on the favicon area
-    $iconX = [double]$tabRect[0] - $left
-    $iconY = [double]$tabRect[1] - $top
-    $iconW = [double]$tabRect[2] - [double]$tabRect[0]
-    $iconH = [double]$tabRect[3] - [double]$tabRect[1]
-    [System.Windows.Controls.Canvas]::SetLeft($tabMarker, ($iconX + ($iconW - 26) / 2))
-    [System.Windows.Controls.Canvas]::SetTop($tabMarker, ($iconY + ($iconH - 26) / 2))
-  }
 
   if ($visible -and $snapshot.cursor) {
     $script:goalX = [double]$snapshot.cursor.x - $left

@@ -100,12 +100,11 @@ function ensureOverlay() {
 
 // Show the controlled window + action point; the indicator itself decides whether
 // it is visible (only while that window is in the foreground, or the desktop is).
-function pushOverlay(hwnd, rect, click, label, mode, tabRect) {
+function pushOverlay(hwnd, rect, click, label, mode) {
   try {
     const screenMode = mode === 'screen';
     const point = String(click || '').split(',').map(Number);
     const box = String(rect || '').split(',').map(Number);
-    const tab = String(tabRect || '').split(',').map(Number);
     const state = {
       updated: Date.now(),
       ttlMs: OVERLAY_TTL_MS,
@@ -115,8 +114,6 @@ function pushOverlay(hwnd, rect, click, label, mode, tabRect) {
       target: { hwnd: Number(hwnd) || 0, rect: box.length === 4 && box.every(Number.isFinite) ? box : [0, 0, 0, 0] },
       cursor: Number.isFinite(point[0]) && Number.isFinite(point[1]) ? { x: point[0], y: point[1] } : undefined,
       label: repairText(label).slice(0, 48),
-      // The browser tab in use (icon rect) so the indicator can point at it.
-      tab: tab.length === 4 && tab.every(Number.isFinite) ? tab : undefined,
       mode: screenMode ? 'screen' : 'window'
     };
     writeFileSync(OVERLAY_STATE, JSON.stringify(state), 'utf8');
@@ -132,16 +129,6 @@ function stripOverlay(text) {
   if (!match) return { text: value };
   const cleaned = value.replace(match[0], '').replace(/\n{2,}/g, '\n').trim();
   return { text: cleaned, hwnd: match[1], rect: match[2], click: match[3] || '' };
-}
-
-// The tab action prints a second marker with the tab icon rect.
-const TAB_MARKER = /^\[overlay-tab\] hwnd=(\d+) rect=(-?\d+,-?\d+,-?\d+,-?\d+)\s*$/m;
-
-function stripTabMarker(text) {
-  const value = String(text || '');
-  const match = TAB_MARKER.exec(value);
-  if (!match) return { text: value };
-  return { text: value.replace(match[0], '').replace(/\n{2,}/g, '\n').trim(), hwnd: match[1], rect: match[2] };
 }
 
 
@@ -615,18 +602,16 @@ export function apply(ctx, config = {}) {
               engineArgs.Overlay = true;
               const result = await engine(engineArgs);
               if (result && result.text) {
-                const tabParsed = stripTabMarker(result.text);
-                if (tabParsed.rect) result.text = tabParsed.text;
                 const parsed = stripOverlay(result.text);
                 // Whole-screen calls resolve no window geometry, so the state is
                 // written from the tool arguments: the banner has to appear too.
                 const screenOnly = !args.window && !args.pid;
                 const caption = captionFor(spec.name, args);
                 if (parsed.rect && CUA_OVERLAY) {
-                  pushOverlay(parsed.hwnd, parsed.rect, parsed.click, caption, screenOnly ? 'screen' : 'window', tabParsed.rect);
+                  pushOverlay(parsed.hwnd, parsed.rect, parsed.click, caption, screenOnly ? 'screen' : 'window');
                 } else if (screenOnly && CUA_OVERLAY) {
                   const point = Number.isFinite(args.x) && Number.isFinite(args.y) ? `${args.x},${args.y}` : '';
-                  pushOverlay(0, '', point, caption, 'screen', tabParsed.rect);
+                  pushOverlay(0, '', point, caption, 'screen');
                 }
                 if (parsed.rect) result.text = parsed.text;
               }
