@@ -100,7 +100,7 @@ function ensureOverlay() {
 
 // Show the controlled window + action point; the indicator itself decides whether
 // it is visible (only while that window is in the foreground, or the desktop is).
-function pushOverlay(hwnd, rect, click) {
+function pushOverlay(hwnd, rect, click, label) {
   try {
     const point = String(click || '').split(',').map(Number);
     const state = {
@@ -108,7 +108,8 @@ function pushOverlay(hwnd, rect, click) {
       ttlMs: OVERLAY_TTL_MS,
       screen: false,
       target: { hwnd: Number(hwnd) || 0, rect: String(rect).split(',').map(Number) },
-      cursor: Number.isFinite(point[0]) && Number.isFinite(point[1]) ? { x: point[0], y: point[1] } : undefined
+      cursor: Number.isFinite(point[0]) && Number.isFinite(point[1]) ? { x: point[0], y: point[1] } : undefined,
+      label: String(label || '').slice(0, 48)
     };
     writeFileSync(OVERLAY_STATE, JSON.stringify(state), 'utf8');
     ensureOverlay();
@@ -123,6 +124,34 @@ function stripOverlay(text) {
   if (!match) return { text: value };
   const cleaned = value.replace(match[0], '').replace(/\n{2,}/g, '\n').trim();
   return { text: cleaned, hwnd: match[1], rect: match[2], click: match[3] || '' };
+}
+
+
+// Caption shown next to the cursor: what the agent is about to do, in a few words.
+function captionFor(name, args = {}) {
+  const target = args.window || (args.pid ? `pid ${args.pid}` : '');
+  const where = target ? ` · ${String(target).slice(0, 34)}` : '';
+  switch (name) {
+    case 'computer_shot': return `screenshot${where}`;
+    case 'computer_click': return `click ${args.x ?? '?'},${args.y ?? '?'}${where}`;
+    case 'computer_drag': return `drag ${args.x ?? '?'},${args.y ?? '?'} → ${args.x2 ?? '?'},${args.y2 ?? '?'}`;
+    case 'computer_type': return `type "${String(args.text || '').slice(0, 24)}"`;
+    case 'computer_key': return `key ${String(args.text || '').slice(0, 20)}`;
+    case 'computer_scroll': return `scroll ${args.delta ?? ''}${where}`;
+    case 'computer_focus': return `focus${where}`;
+    case 'computer_window': return `window ${args.op || 'normal'}${where}`;
+    case 'computer_launch': return `launch ${String(args.path || '').split(/[\\/]/).pop()}`;
+    case 'computer_tabs': return `browser tabs${where}`;
+    case 'computer_tab': return `tab "${String(args.title || '').slice(0, 24)}"`;
+    case 'computer_wait': return `wait ${args.window || args.text || ''}`.trim();
+    case 'computer_record': return `record ${args.frames || 10} frames${where}`;
+    case 'computer_video': return `record ${args.format || 'mp4'}${where}`;
+    case 'computer_ocr': return 'read text (ocr)';
+    case 'computer_uitree': return `ui tree${where}`;
+    case 'computer_ui_action': return `ui ${args.kind || 'act'} "${String(args.name || '').slice(0, 20)}"`;
+    case 'computer_cdp': return `browser ${args.action || ''}${args.target ? ` · ${String(args.target).slice(0, 24)}` : ''}`;
+    default: return name.replace(/^computer_/, '');
+  }
 }
 
 // ------------------------------------------------------------------- catalogue
@@ -424,7 +453,7 @@ export function apply(ctx, config = {}) {
               const result = await engine(engineArgs);
               if (result && result.text) {
                 const parsed = stripOverlay(result.text);
-                if (parsed.rect && CUA_OVERLAY) pushOverlay(parsed.hwnd, parsed.rect, parsed.click);
+                if (parsed.rect && CUA_OVERLAY) pushOverlay(parsed.hwnd, parsed.rect, parsed.click, captionFor(spec.name, args));
                 if (parsed.rect) result.text = parsed.text;
               }
               try {

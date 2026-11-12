@@ -1,45 +1,30 @@
-# DeepSeek computer-use indicator.
+# DeepSeek computer-use indicator (WPF).
 #
-# A full-screen, click-through window: the glow is built from a handful of nested
-# strokes and the window's constant opacity makes them translucent. Colour key plus
-# opacity together would wash the whole screen, so the form keeps the key and only
-# the strokes carry the tint - short (48 px), light and unobtrusive.
+# WPF gives real per-pixel alpha, so the sprite keeps its soft glow (no dithering,
+# no magenta fringes) and the edge glow can fade smoothly instead of ending in a
+# hard line.
+#
+#   * full-screen transparent window, click-through, never takes focus;
+#   * four edge gradients: opaque at the screen border, transparent ~72 px inside;
+#   * the cursor sprite, tinted and gently rocking while an action runs;
+#   * a small caption next to it naming what the agent is doing.
 #
 # State file written by the plugin:
-#   { "updated": <unix ms>, "ttlMs": 90000, "screen": true|false,
-#     "target": { "hwnd": 123, "rect": [l,t,r,b] }, "cursor": { "x": 900, "y": 520 } }
+#   { "updated": <unix ms>, "ttlMs": 90000, "screen": true,
+#     "target": { "hwnd": 123, "rect": [l,t,r,b] },
+#     "cursor": { "x": 900, "y": 520 }, "label": "click 592,781" }
 param(
   [string]$StatePath = (Join-Path $env:TEMP 'dsh-cua-overlay-state.json'),
   [string]$PidPath = (Join-Path $env:TEMP 'dsh-cua-overlay.pid'),
-  [string]$LogPath = (Join-Path $env:TEMP 'dsh-cua-overlay.log')
+  [string]$LogPath = (Join-Path $env:TEMP 'dsh-cua-overlay.log'),
+  [int]$Depth = 72,
+  [double]$CursorSize = 40
 )
 
-Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Xaml, System.Windows.Forms, System.Drawing
 
-if (-not ('CuaGlow.ClickThroughForm' -as [type])) {
-  Add-Type -ReferencedAssemblies System.Windows.Forms, System.Drawing -TypeDefinition @'
-using System;
-using System.Windows.Forms;
-
-namespace CuaGlow {
-  // Every hit test answers HTTRANSPARENT, so the overlay never eats a click even
-  // where the layered colour key alone would still be hit-testable.
-  public class ClickThroughForm : Form {
-    public ClickThroughForm() {
-      DoubleBuffered = true;
-      SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
-    }
-    protected override void WndProc(ref Message m) {
-      if (m.Msg == 0x0084) { m.Result = (IntPtr)(-1); return; }
-      base.WndProc(ref m);
-    }
-  }
-}
-'@
-}
-
-if (-not ('CuaGlow.Native' -as [type])) {
-  Add-Type -Namespace CuaGlow -Name Native -MemberDefinition @'
+if (-not ('CuaWpf.Native' -as [type])) {
+  Add-Type -Namespace CuaWpf -Name Native -MemberDefinition @'
 [DllImport("user32.dll")] public static extern int GetWindowLong(System.IntPtr hWnd, int nIndex);
 [DllImport("user32.dll")] public static extern int SetWindowLong(System.IntPtr hWnd, int nIndex, int dwNewLong);
 [DllImport("user32.dll")] public static extern System.IntPtr GetForegroundWindow();
@@ -50,68 +35,113 @@ if (-not ('CuaGlow.Native' -as [type])) {
 function Note([string]$text) {
   try { Add-Content -LiteralPath $LogPath -Value ((Get-Date -Format 'HH:mm:ss') + ' ' + $text) } catch {}
 }
-
 try { [System.IO.File]::WriteAllText($PidPath, [string]$PID, (New-Object System.Text.UTF8Encoding($false))) } catch {}
 Note "start pid=$PID"
 
-$spritePath = Join-Path $PSScriptRoot 'cursor-keyed.png'
-$sprite = $null
-try { if (Test-Path -LiteralPath $spritePath) { $sprite = [System.Drawing.Image]::FromFile($spritePath) } } catch {}
+$v = [System.Windows.Forms.SystemInformation]::VirtualScreen; $screen = [pscustomobject]@{ X = $v.X; Y = $v.Y; Width = $v.Width; Height = $v.Height }
+$left = $screen.X; $top = $screen.Y; $width = $screen.Width; $height = $screen.Height
 
-$fuchsia = [System.Drawing.Color]::Fuchsia
-# short, light ramp: 8 strokes of 6 px, fading towards the middle of the screen
-$bands = @()
-for ($i = 0; $i -lt 24; $i++) {
-  $t = $i / 23.0
-  $r = [int](77 + (201 - 77) * $t)
-  $g = [int](107 + (214 - 107) * $t)
-  $b = [int](254 + (255 - 254) * $t)
-  $bands += [System.Drawing.Color]::FromArgb($r, $g, $b)
+$window = New-Object System.Windows.Window
+$window.WindowStyle = 'None'
+$window.AllowsTransparency = $true
+$window.Background = [System.Windows.Media.Brushes]::Transparent
+$window.ShowInTaskbar = $false
+$window.Topmost = $true
+$window.ResizeMode = 'NoResize'
+$window.IsHitTestVisible = $false
+$window.Left = $left
+$window.Top = $top
+$window.Width = $width
+$window.Height = $height
+
+$canvas = New-Object System.Windows.Controls.Canvas
+$canvas.Width = $width
+$canvas.Height = $height
+$window.Content = $canvas
+
+function New-EdgeGradient([string]$side) {
+  $brush = New-Object System.Windows.Media.LinearGradientBrush
+  $deepseek = [System.Windows.Media.Color]::FromArgb(150, 77, 107, 254)
+  $clear = [System.Windows.Media.Color]::FromArgb(0, 77, 107, 254)
+  switch ($side) {
+    'top' { $brush.StartPoint = New-Object System.Windows.Point(0, 0); $brush.EndPoint = New-Object System.Windows.Point(0, 1) }
+    'bottom' { $brush.StartPoint = New-Object System.Windows.Point(0, 1); $brush.EndPoint = New-Object System.Windows.Point(0, 0) }
+    'left' { $brush.StartPoint = New-Object System.Windows.Point(0, 0); $brush.EndPoint = New-Object System.Windows.Point(1, 0) }
+    'right' { $brush.StartPoint = New-Object System.Windows.Point(1, 0); $brush.EndPoint = New-Object System.Windows.Point(0, 0) }
+  }
+  $brush.GradientStops.Add((New-Object System.Windows.Media.GradientStop($deepseek, 0)))
+  $brush.GradientStops.Add((New-Object System.Windows.Media.GradientStop($clear, 1)))
+  return $brush
 }
-$virtual = [System.Windows.Forms.SystemInformation]::VirtualScreen
 
-$form = New-Object CuaGlow.ClickThroughForm
-$form.FormBorderStyle = 'None'
-$form.ShowInTaskbar = $false
-$form.TopMost = $true
-$form.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
-$form.BackColor = $fuchsia
-$form.TransparencyKey = $fuchsia
-$form.Bounds = $virtual
-$form.Opacity = 0.22
-$form.Add_HandleCreated({
-  $style = [CuaGlow.Native]::GetWindowLong($form.Handle, -20)
-  [void][CuaGlow.Native]::SetWindowLong($form.Handle, -20, ($style -bor 0x20 -bor 0x80 -bor 0x08000000))
-})
+$bands = @(
+  @{ side = 'top'; x = 0; y = 0; w = $width; h = $Depth },
+  @{ side = 'bottom'; x = 0; y = ($height - $Depth); w = $width; h = $Depth },
+  @{ side = 'left'; x = 0; y = 0; w = $Depth; h = $height },
+  @{ side = 'right'; x = ($width - $Depth); y = 0; w = $Depth; h = $height }
+)
+foreach ($band in $bands) {
+  $rect = New-Object System.Windows.Shapes.Rectangle
+  $rect.Width = $band.w
+  $rect.Height = $band.h
+  $rect.Fill = New-EdgeGradient $band.side
+  [System.Windows.Controls.Canvas]::SetLeft($rect, $band.x)
+  [System.Windows.Controls.Canvas]::SetTop($rect, $band.y)
+  [void]$canvas.Children.Add($rect)
+}
 
-$script:active = $false
+# cursor: sprite + rotation + caption
+$cursorGroup = New-Object System.Windows.Controls.Canvas
+$cursorGroup.Width = $CursorSize
+$cursorGroup.Height = $CursorSize
+$cursorGroup.RenderTransformOrigin = New-Object System.Windows.Point(0.2, 0.15)
+$rotate = New-Object System.Windows.Media.RotateTransform(0)
+$cursorGroup.RenderTransform = $rotate
+
+$spritePath = Join-Path $PSScriptRoot 'cursor-neon-crisp.png'
+if (Test-Path -LiteralPath $spritePath) {
+  $image = New-Object System.Windows.Controls.Image
+  $bitmap = New-Object System.Windows.Media.Imaging.BitmapImage
+  $bitmap.BeginInit()
+  $bitmap.UriSource = New-Object System.Uri($spritePath)
+  $bitmap.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+  $bitmap.EndInit()
+  $image.Source = $bitmap
+  $image.Width = $CursorSize
+  $image.Height = $CursorSize
+  [void]$cursorGroup.Children.Add($image)
+}
+[System.Windows.Controls.Canvas]::SetLeft($cursorGroup, 0)
+[System.Windows.Controls.Canvas]::SetTop($cursorGroup, 0)
+[void]$canvas.Children.Add($cursorGroup)
+
+$captionBorder = New-Object System.Windows.Controls.Border
+$captionBorder.Background = New-Object System.Windows.Media.SolidColorBrush([System.Windows.Media.Color]::FromArgb(232, 16, 20, 34))
+$captionBorder.CornerRadius = New-Object System.Windows.CornerRadius(7)
+$captionBorder.Padding = New-Object System.Windows.Thickness(9, 4, 9, 4)
+$captionText = New-Object System.Windows.Controls.TextBlock
+$captionText.Foreground = New-Object System.Windows.Media.SolidColorBrush([System.Windows.Media.Color]::FromArgb(242, 224, 232, 255))
+$captionText.FontSize = 12
+$captionText.FontFamily = New-Object System.Windows.Media.FontFamily('Segoe UI')
+$captionBorder.Child = $captionText
+$captionBorder.Visibility = 'Collapsed'
+[void]$canvas.Children.Add($captionBorder)
+
+$window.Show()
+
+$handle = (New-Object System.Windows.Interop.WindowInteropHelper($window)).Handle
+$style = [CuaWpf.Native]::GetWindowLong($handle, -20)
+[void][CuaWpf.Native]::SetWindowLong($handle, -20, ($style -bor 0x80000 -bor 0x20 -bor 0x80 -bor 0x08000000))
+Note ('hwnd=' + $handle + ' ex=0x{0:X}' -f [CuaWpf.Native]::GetWindowLong($handle, -20))
+
+$script:snapshot = $null
 $script:curX = -1.0
 $script:curY = -1.0
 $script:goalX = -1.0
 $script:goalY = -1.0
+$script:lastStamp = 0
 $script:lastSeen = 0
-$script:frames = 0
-$script:lastPaint = @{ x = -1.0; y = -1.0; active = $false }
-
-$form.Add_Paint({
-  param($sender, $e)
-  if (-not $script:active) { return }
-  $g = $e.Graphics
-  $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::None
-  $w = $sender.ClientSize.Width
-  $h = $sender.ClientSize.Height
-
-  $thickness = 2
-  $inset = 0
-  foreach ($color in $bands) {
-    $pen = New-Object System.Drawing.Pen($color, $thickness)
-    $rect = New-Object System.Drawing.Rectangle($inset, $inset, ($w - $inset * 2 - 1), ($h - $inset * 2 - 1))
-    $g.DrawRectangle($pen, $rect)
-    $pen.Dispose()
-    $inset += $thickness
-  }
-
-})
+$script:rock = 0.0
 
 function Read-Snapshot {
   try {
@@ -126,53 +156,21 @@ function ForegroundMatches($snapshot) {
   if (-not $snapshot) { return $false }
   if ($snapshot.screen -eq $true) { return $true }
   try {
-    $foreground = [CuaGlow.Native]::GetForegroundWindow()
+    $foreground = [CuaWpf.Native]::GetForegroundWindow()
     if ($foreground -eq [System.IntPtr]::Zero) { return $false }
     if ($snapshot.target -and $snapshot.target.hwnd) {
       $target = [int64]$snapshot.target.hwnd
       if ([int64]$foreground.ToInt64() -eq $target) { return $true }
-      $root = [CuaGlow.Native]::GetAncestor($foreground, 2)
+      $root = [CuaWpf.Native]::GetAncestor($foreground, 2)
       if ($root -ne [System.IntPtr]::Zero -and [int64]$root.ToInt64() -eq $target) { return $true }
     }
     return $false
   } catch { return $false }
 }
 
-$form.Show()
-
-# The cursor lives in its own window: the glow form is translucent as a whole, and
-# that would wash the pointer out with it.
-$cursorForm = New-Object CuaGlow.ClickThroughForm
-$cursorForm.FormBorderStyle = 'None'
-$cursorForm.ShowInTaskbar = $false
-$cursorForm.TopMost = $true
-$cursorForm.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
-$cursorForm.BackColor = $fuchsia
-$cursorForm.TransparencyKey = $fuchsia
-$cursorForm.Size = New-Object System.Drawing.Size(128, 128)
-$cursorForm.Add_HandleCreated({
-  $style = [CuaGlow.Native]::GetWindowLong($cursorForm.Handle, -20)
-  [void][CuaGlow.Native]::SetWindowLong($cursorForm.Handle, -20, ($style -bor 0x20 -bor 0x80 -bor 0x08000000))
-})
-$cursorForm.Add_Paint({
-  param($sender, $e)
-  if (-not $sprite) { return }
-  $g = $e.Graphics
-  $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
-  $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-  # sprite is 96x96 with the tip at (13,9): draw so the tip lands on the cursor point
-  $g.DrawImage($sprite, 16, 16, 96, 96)
-})
-$cursorForm.Show()
-foreach ($wnd in @($form.Handle, $cursorForm.Handle)) {
-  $current = [CuaGlow.Native]::GetWindowLong($wnd, -20)
-  [void][CuaGlow.Native]::SetWindowLong($wnd, -20, ($current -bor 0x80000 -bor 0x20 -bor 0x80 -bor 0x08000000))
-  Note ('style hwnd=' + $wnd + ' ex=' + ('0x{0:X}' -f [CuaGlow.Native]::GetWindowLong($wnd, -20)))
-}
-
-$timer = New-Object System.Windows.Forms.Timer
-$timer.Interval = 45
-$timer.add_Tick({
+$timer = New-Object System.Windows.Threading.DispatcherTimer
+$timer.Interval = [TimeSpan]::FromMilliseconds(33)
+$timer.Add_Tick({
   $snapshot = Read-Snapshot
   $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
   $ttl = 90000
@@ -181,13 +179,25 @@ $timer.add_Tick({
   if ($snapshot -and $snapshot.updated) { $fresh = ($now - [int64]$snapshot.updated) -le $ttl }
   $visible = $fresh -and (ForegroundMatches $snapshot)
   if ($visible) { $script:lastSeen = $now }
-  $script:active = $visible
+
+  $edgeOpacity = if ($visible) { 1.0 } else { 0.0 }
+  foreach ($child in $canvas.Children) {
+    if ($child -is [System.Windows.Shapes.Rectangle]) { $child.Opacity = $edgeOpacity }
+  }
+  $cursorGroup.Visibility = if ($visible) { 'Visible' } else { 'Hidden' }
+  $captionBorder.Visibility = if ($visible -and $captionText.Text) { 'Visible' } else { 'Collapsed' }
 
   if ($visible -and $snapshot.cursor) {
-    $script:goalX = [double]$snapshot.cursor.x
-    $script:goalY = [double]$snapshot.cursor.y
+    $script:goalX = [double]$snapshot.cursor.x - $left
+    $script:goalY = [double]$snapshot.cursor.y - $top
     if ($script:curX -lt 0) { $script:curX = $script:goalX; $script:curY = $script:goalY }
+    if ($snapshot.label) { $captionText.Text = [string]$snapshot.label }
+    if ($snapshot.updated -ne $script:lastStamp) {
+      $script:lastStamp = $snapshot.updated
+      $script:rock = 0.0
+    }
   }
+
   if ($script:curX -ge 0) {
     $dx = $script:goalX - $script:curX
     $dy = $script:goalY - $script:curY
@@ -198,33 +208,28 @@ $timer.add_Tick({
       $script:curX = $script:goalX
       $script:curY = $script:goalY
     }
-  }
+    [System.Windows.Controls.Canvas]::SetLeft($cursorGroup, ($script:curX - $CursorSize * 0.18))
+    [System.Windows.Controls.Canvas]::SetTop($cursorGroup, ($script:curY - $CursorSize * 0.15))
 
-  if ($script:curX -ge 0) {
-    $cursorForm.Location = New-Object System.Drawing.Point([int]($script:curX - 4), [int]($script:curY - 4))
-    if ($visible -and -not $cursorForm.Visible) { $cursorForm.Show() }
-    if (-not $visible -and $cursorForm.Visible) { $cursorForm.Hide() }
-  } else {
-    if ($cursorForm.Visible) { $cursorForm.Hide() }
-  }
+    # gentle rocking while the action is fresh, back to upright afterwards
+    $age = $now - $script:lastStamp
+    $targetAngle = if ($age -lt 6000) { 14 * [Math]::Sin($age / 260.0) } else { 0 }
+    $script:rock += ($targetAngle - $script:rock) * 0.18
+    $rotate.Angle = $script:rock
 
-  $moved = [Math]::Abs($script:curX - $script:lastPaint.x) -gt 0.8 -or [Math]::Abs($script:curY - $script:lastPaint.y) -gt 0.8
-  $changed = $visible -ne $script:lastPaint.active
-  if ($moved -or $changed -or $script:frames -lt 2) {
-    $script:lastPaint = @{ x = $script:curX; y = $script:curY; active = $visible }
-    $form.Invalidate()
-  }
-
-  $script:frames += 1
-  if ($script:frames % 90 -eq 0) {
-    Note ('tick vis=' + $visible + ' cur=' + [Math]::Round($script:curX) + ',' + [Math]::Round($script:curY))
+    if ($captionText.Text) {
+      $captionBorder.Measure((New-Object System.Windows.Size([double]::PositiveInfinity, [double]::PositiveInfinity)))
+      $capW = $captionBorder.DesiredSize.Width
+      $capH = $captionBorder.DesiredSize.Height
+      [System.Windows.Controls.Canvas]::SetLeft($captionBorder, [Math]::Min(($width - $capW - 8), ($script:curX + $CursorSize * 0.9)))
+      [System.Windows.Controls.Canvas]::SetTop($captionBorder, [Math]::Max(8, ($script:curY - $capH * 0.2)))
+    }
   }
 
   if ($script:lastSeen -gt 0 -and ($now - $script:lastSeen) -gt 300000) {
-    $form.Close()
-    [System.Windows.Forms.Application]::ExitThread()
+    $window.Close()
   }
 })
 $timer.Start()
 
-[System.Windows.Forms.Application]::Run($form)
+[System.Windows.Threading.Dispatcher]::Run()
