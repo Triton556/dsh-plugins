@@ -2,7 +2,7 @@
 //
 // Every tool answers { ok, text }; screenshots and clips also carry an inline
 // attachment so the chat can show the picture without a second tool call.
-import { appendFileSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, existsSync, writeFileSync, unlinkSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { extname, join } from 'node:path';
@@ -100,7 +100,7 @@ function ensureOverlay() {
 
 // Show the controlled window + action point; the indicator itself decides whether
 // it is visible (only while that window is in the foreground, or the desktop is).
-function pushOverlay(hwnd, rect, click, label) {
+function pushOverlay(hwnd, rect, click, label, mode) {
   try {
     const point = String(click || '').split(',').map(Number);
     const state = {
@@ -109,7 +109,8 @@ function pushOverlay(hwnd, rect, click, label) {
       screen: false,
       target: { hwnd: Number(hwnd) || 0, rect: String(rect).split(',').map(Number) },
       cursor: Number.isFinite(point[0]) && Number.isFinite(point[1]) ? { x: point[0], y: point[1] } : undefined,
-      label: String(label || '').slice(0, 48)
+      label: String(label || '').slice(0, 48),
+      mode: mode === 'screen' ? 'screen' : 'window'
     };
     writeFileSync(OVERLAY_STATE, JSON.stringify(state), 'utf8');
     ensureOverlay();
@@ -154,6 +155,56 @@ function captionFor(name, args = {}) {
   }
 }
 
+
+// ESC in the on-screen banner writes a stop marker; the next call refuses to act
+// until the agent has asked the user and passed user_ready: true.
+const STOP_MARKER = join(tmpdir(), 'dsh-cua-stop.json');
+const STOP_FRESH_MS = 15 * 60 * 1000;
+
+function stopRequested() {
+  try {
+    if (!existsSync(STOP_MARKER)) return false;
+    const raw = JSON.parse(readFileSync(STOP_MARKER, 'utf8'));
+    const at = Number(raw && raw.at) || 0;
+    return at > 0 && Date.now() - at <= STOP_FRESH_MS;
+  } catch (error) {
+    return false;
+  }
+}
+
+function clearStop() {
+  try { if (existsSync(STOP_MARKER)) unlinkSync(STOP_MARKER); } catch (error) {}
+}
+
+// Screen-wide input (no window/pid) needs the user's go-ahead: the overlay banner
+// says so, and the tool refuses until the agent confirmed it with the user.
+const SCREEN_INPUT_TOOLS = new Set(['computer_click', 'computer_drag', 'computer_type', 'computer_key', 'computer_scroll']);
+
+
+// ------------------------------------------------------------------ system prompt
+const CUA_PROMPT = [
+  'Computer use: the computer_* tools drive the real desktop (windows, clicks, typing,',
+  'browser tabs, screenshots, recordings, OCR, Chrome DevTools).',
+  '',
+  'When to use them: anything that is only reachable through a GUI - an app with no CLI,',
+  'a browser page that needs a login, a native dialog, a canvas or video frame that must be',
+  'read. Prefer shell/file tools whenever they can do the job.',
+  '',
+  'Be proactive: if the user asks for something and the only way is the GUI, say so briefly',
+  'and offer to do it with computer use instead of silently refusing.',
+  '',
+  'Consent rules:',
+  '- Driving ONE app or ONE browser tab (pass window or pid / a CDP target) needs no special',
+  '  permission; just do it and report what you touched.',
+  '- Driving the WHOLE SCREEN (click/type/scroll without window or pid) takes the mouse and',
+  '  keyboard away from the user. Before the first such call, ask whether they are ready to',
+  '  leave the machine alone, then pass user_ready: true. A banner "DeepSeek using your',
+  '  computer" appears on screen meanwhile.',
+  '- If the user presses ESC, the next call fails with STOPPED and the marker stays for 15',
+  '  minutes: ask whether to continue, then retry with user_ready: true.',
+  '- Never fight the user for the cursor: if they take over, stop and ask.',
+].join('\n');
+
 // ------------------------------------------------------------------- catalogue
 export const TOOLS = [
   {
@@ -181,6 +232,7 @@ export const TOOLS = [
     name: 'computer_click',
     description: 'Click at a point. With "window" given, coordinates are window-relative and the window is focused first; otherwise they are screen coordinates.',
     parameters: {
+      user_ready: { type: 'boolean', description: 'Set true only after the user agreed to let the agent drive the whole screen (not needed when window/pid is given)' },
       window: { type: 'string' },
       pid: { type: 'integer', description: 'Target this process id' },
       x: { type: 'integer' },
@@ -194,6 +246,7 @@ export const TOOLS = [
     name: 'computer_drag',
     description: 'Press, move and release between two points (coordinates are window-relative when "window" is given).',
     parameters: {
+      user_ready: { type: 'boolean', description: 'Set true only after the user agreed to let the agent drive the whole screen (not needed when window/pid is given)' },
       window: { type: 'string' },
       pid: { type: 'integer', description: 'Target this process id' },
       x: { type: 'integer', description: 'Start X' },
@@ -208,6 +261,7 @@ export const TOOLS = [
     name: 'computer_type',
     description: 'Type text into the focused control. Non-ASCII needs unicode: true (plain typing uses SendKeys and mangles it).',
     parameters: {
+      user_ready: { type: 'boolean', description: 'Set true only after the user agreed to let the agent drive the whole screen (not needed when window/pid is given)' },
       text: { type: 'string', description: 'Text to type' },
       unicode: { type: 'boolean', description: 'SendInput with unicode codepoints (non-ASCII)' }
     },
@@ -216,13 +270,15 @@ export const TOOLS = [
   {
     name: 'computer_key',
     description: 'Send a key combination in SendKeys syntax: "^c" copy, "%{F4}" alt+F4, "{ENTER}", "^+{ESC}".',
-    parameters: { text: { type: 'string', description: 'SendKeys sequence' } },
+    parameters: {
+      user_ready: { type: 'boolean', description: 'Set true only after the user agreed to let the agent drive the whole screen (not needed when window/pid is given)' }, text: { type: 'string', description: 'SendKeys sequence' } },
     run: (a) => ({ action: 'key', text: a.text })
   },
   {
     name: 'computer_scroll',
     description: 'Scroll the mouse wheel at a point. Negative delta scrolls down.',
     parameters: {
+      user_ready: { type: 'boolean', description: 'Set true only after the user agreed to let the agent drive the whole screen (not needed when window/pid is given)' },
       window: { type: 'string' },
       pid: { type: 'integer', description: 'Target this process id' },
       x: { type: 'integer' },
@@ -382,6 +438,25 @@ export function apply(ctx, config = {}) {
     console.warn('[dsh-computer-use] ctx.inject unavailable; nothing registered');
     return () => {};
   }
+  // Tell every new session what these tools are for, and when to ask first.
+  if (typeof ctx.inject === 'function') {
+    try {
+      ctx.inject(['systemPrompt'], (promptCtx) => {
+        try {
+          promptCtx.effect(() => {
+            const prompt = typeof promptCtx.get === 'function' ? promptCtx.get('systemPrompt') : null;
+            if (!prompt || typeof prompt.section !== 'function') return () => {};
+            const dispose = prompt.section({ name: 'tool:computer-use', order: 120, text: CUA_PROMPT });
+            return () => { try { if (typeof dispose === 'function') dispose(); } catch (error) {} };
+          }, 'dsh-computer-use: system prompt');
+        } catch (error) {
+          console.warn('[dsh-computer-use] system prompt section failed:', String(error && error.message || error).slice(0, 160));
+        }
+        return () => {};
+      });
+    } catch (error) {}
+  }
+
   ctx.inject(['tools'], (toolCtx) => {
     const disposers = [];
     toolCtx.effect(() => {
@@ -422,6 +497,24 @@ export function apply(ctx, config = {}) {
             },
             execute: async (args) => {
               const { engine, cdp } = await import('./tools/engine.mjs');
+
+              // Whole-screen input and a fresh ESC stop both require the user's consent.
+              const screenWide = SCREEN_INPUT_TOOLS.has(spec.name) && !args.window && !args.pid;
+              const consent = args.user_ready === true;
+              if (screenWide && !consent) {
+                return {
+                  ok: false,
+                  text: 'REFUSED: this acts on the whole screen. Ask the user to confirm (the on-screen banner "DeepSeek using your computer" shows while you work) and retry with user_ready: true. For a single app, pass window or pid instead - that needs no confirmation.'
+                };
+              }
+              if (stopRequested() && !consent) {
+                return {
+                  ok: false,
+                  text: 'STOPPED: the user pressed ESC. Ask whether to continue before touching the computer again; retry with user_ready: true if they agree.'
+                };
+              }
+              if (consent) clearStop();
+
               const call = spec.run(args || {});
               if (call && call.cdp) {
                 const c = call.cdp;
@@ -453,7 +546,7 @@ export function apply(ctx, config = {}) {
               const result = await engine(engineArgs);
               if (result && result.text) {
                 const parsed = stripOverlay(result.text);
-                if (parsed.rect && CUA_OVERLAY) pushOverlay(parsed.hwnd, parsed.rect, parsed.click, captionFor(spec.name, args));
+                if (parsed.rect && CUA_OVERLAY) pushOverlay(parsed.hwnd, parsed.rect, parsed.click, captionFor(spec.name, args), screenWide || args.window === undefined && args.pid === undefined ? 'screen' : 'window');
                 if (parsed.rect) result.text = parsed.text;
               }
               try {

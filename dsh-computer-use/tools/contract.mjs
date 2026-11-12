@@ -50,8 +50,9 @@ check('tool catalogue non-empty', TOOLS.length === 20, `${TOOLS.length}`);
 
 const { ctx, registered, effects, injections } = makeContext();
 const applyDisposer = apply(ctx, {});
-check('apply declares an injection', injections.length === 1, JSON.stringify(injections.map((i) => i.services)));
-check('injection requests tools', !!injections[0] && injections[0].services.includes('tools'));
+check('apply declares an injection', injections.length >= 1, JSON.stringify(injections.map((i) => i.services)));
+const toolsInjection = injections.find((i) => i.services.includes('tools'));
+check('injection requests tools', !!toolsInjection);
 check('no tools registered before the service arrives', registered.length === 0, `${registered.length}`);
 
 // Calling apply's own disposer must not throw: an out-of-scope reference there
@@ -61,7 +62,7 @@ try { if (typeof applyDisposer === 'function') applyDisposer(); } catch (error) 
 check('apply disposer runs', !applyDisposeThrew, applyDisposeThrew);
 
 // Host calls the injection callback once the service is available.
-const injectDisposer = injections[0].callback(ctx);
+const injectDisposer = toolsInjection.callback(ctx);
 check('effect registered after injection', effects.length === 1, `${effects.length}`);
 check('effect has a label', typeof effects[0].label === 'string' && effects[0].label.length > 0);
 
