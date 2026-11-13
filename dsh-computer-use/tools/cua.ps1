@@ -350,22 +350,20 @@ function Get-TabItems([System.IntPtr]$hwnd) {
 }
 
 function Select-TabItem($item, [System.IntPtr]$hwnd) {
+  # SelectionItemPattern (or InvokePattern) selects in a BACKGROUND window. There
+  # is deliberately no focus-and-click fallback: the tool promises "no mouse, no
+  # focus", and a focus steal would take the user's foreground away.
   try {
     $pattern = $item.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
     $pattern.Select()
+    return $true
   } catch {
     try {
       $invoke = $item.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
       $invoke.Invoke()
+      return $true
     } catch {
-      $r = $item.Current.BoundingRectangle
-      if ($r.Width -gt 0) {
-        Focus-Window $hwnd
-        Move-To ([int]($r.Left + $r.Width / 2)) ([int]($r.Top + $r.Height / 2))
-        [void][Cua.Native]::mouse_event([Cua.Native]::LBUTTONDOWN, 0, 0, 0, [UIntPtr]::Zero)
-        Start-Sleep -Milliseconds 40
-        [void][Cua.Native]::mouse_event([Cua.Native]::LBUTTONUP, 0, 0, 0, [UIntPtr]::Zero)
-      }
+      return $false
     }
   }
 }
@@ -438,6 +436,19 @@ if ($Window) {
   # Target a process directly: window titles clash and change, pids do not.
   $match = Get-TopWindows | Where-Object { $_.pid -eq $ProcessId } | Select-Object -First 1
   if ($match) { $h = [System.IntPtr]$match.hwnd }
+}
+# An explicit target that did not resolve must FAIL, never degrade to desktop
+# input: otherwise a typo in a window title turns a scoped click into a
+# whole-screen click at the given coordinates (and bypasses the consent gate).
+$explicitTarget = [bool]$Window -or ($ProcessId -gt 0)
+function Assert-Target([System.IntPtr]$handle) {
+  if ($explicitTarget -and $handle -eq [System.IntPtr]::Zero) {
+    throw "window not found: '$Window' (pid $ProcessId); refusing to fall back to whole-screen input"
+  }
+}
+# 'wait' keeps its lazy resolution (it polls for a window that may appear later).
+if ($explicitTarget -and $h -eq [System.IntPtr]::Zero -and $Action -notin @('wait')) {
+  Assert-Target $h
 }
 # Machine-readable geometry for the on-screen overlay (frame + click marker). The
 # agent side turns this line into an overlay process and strips it from the reply.
@@ -540,11 +551,11 @@ switch ($Action) {
       if (-not $match) { continue }
       $hw = [System.IntPtr]$t.hwnd
       # No Focus-Window here: SelectionItemPattern selects the tab in a background
-      # window; focusing would steal the user's foreground (see Select-TabItem's
-      # fallback for the rare case where the pattern is unavailable).
-      Select-TabItem $match $hw
+      # window; focusing would steal the user's foreground.
+      $selected = Select-TabItem $match $hw
       Start-Sleep -Milliseconds 200
-      "selected tab: $($match.Current.Name) in hwnd=$($t.hwnd)"
+      if ($selected) { "selected tab: $($match.Current.Name) in hwnd=$($t.hwnd)" }
+      else { "tab not selectable through UI Automation (no focus fallback): $($match.Current.Name)" }
       $done = $true
       break
     }

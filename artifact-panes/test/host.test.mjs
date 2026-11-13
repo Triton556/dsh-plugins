@@ -46,6 +46,8 @@ const fs = {
 const routes = new Map();
 const ctx = {
   effect(fn) { return fn(); },
+  // the host plugin also injects the tools service for the artifact tools
+  inject(services, callback) { if (services.includes('tools')) callback(ctx); return () => {}; },
   get(name) {
     if (name === 'webServer') return { register(def) { routes.set(def.path, def); return () => routes.delete(def.path); } };
     if (name === 'fs') return fs;

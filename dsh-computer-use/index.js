@@ -27,7 +27,8 @@ function downscale(filePath, maxDimension) {
   // A full-screen PNG can exceed the deployment's image limits, so shrink it
   // with the ffmpeg that the recording path already depends on.
   try {
-    const { execFileSync } = require('node:child_process');
+    // ESM entry: the imported binding, not require() (which does not exist here
+    // and made the oversized-image retry a silent no-op).
     const target = filePath.replace(/\.(png|jpe?g|webp)$/i, '-small.$1');
     execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-i', filePath,
       '-vf', `scale='min(${maxDimension},iw)':-1`, target], { timeout: 20000, windowsHide: true });
@@ -85,10 +86,10 @@ function overlayAlive() {
 }
 
 function ensureOverlay() {
-  if (overlayAlive()) return;
+  if (overlayAlive()) return Promise.resolve();
   // A detached Node spawn yields a process that exits before it can create its
   // window, so the PowerShell engine starts the daemon with Start-Process instead.
-  void (async () => {
+  return (async () => {
     try {
       const { engine } = await import('./tools/engine.mjs');
       await engine({ action: 'overlay', Script: fileURLToPath(OVERLAY_SCRIPT) });
@@ -148,7 +149,24 @@ const badgeTimers = new Map();     // `${port}|${ref}` -> restore timer
 const badgeTargets = new Map();    // `${port}|${ref}` -> resolved target id
 
 function badgeRestoreJs() {
-  return "(function(){ document.querySelectorAll('link[rel*=\\\"icon\\\"]').forEach((l)=>{ const s=(window.__dshSaved||[]).find((x)=>x.el===l); if(s) l.href=s.href; }); if(window.__dshTitle) document.title=window.__dshTitle; return 'off'; })()";
+  // Same selector as badge-on: an escaped `link[rel*=\"icon\"]` searched for a
+  // literal quote and never matched, so the favicon was never restored.
+  return `(function(){
+    (window.__dshSaved || []).forEach((saved) => {
+      try {
+        if (saved.el) {
+          saved.el.href = saved.href;
+          if (typeof saved.type === 'string') saved.el.type = saved.type;
+        }
+      } catch (e) {}
+    });
+    window.__dshSaved = [];
+    if (window.__dshTitleSaved) {
+      document.title = window.__dshTitle;
+      window.__dshTitleSaved = false;
+    }
+    return 'off';
+  })()`;
 }
 
 function badgePythonPath() {
@@ -168,57 +186,73 @@ async function cdpBadgeOn(port, ref) {
   const pending = badgeTimers.get(key);
   if (pending) { clearTimeout(pending); badgeTimers.delete(key); }
   const listRes = await cdp({ List: true, Port: port });
-  if (!listRes.ok) return;
-  const pages = JSON.parse(listRes.text).filter((t) => t.type === 'page');
-  const picked = pages.find((p) => p.id === ref)
-    || pages.find((p) => String(p.url || '').includes(ref))
-    || pages.find((p) => String(p.title || '').includes(ref))
-    || (ref ? null : pages[0]);
-  if (!picked) return;
+  if (!listRes.ok) return undefined;
+  const targets = JSON.parse(listRes.text).filter((t) => t.type === 'page' || t.type === 'webview');
+  const picked = targets.find((p) => p.id === ref)
+    || targets.find((p) => String(p.url || '').includes(ref))
+    || targets.find((p) => String(p.title || '').includes(ref))
+    || (ref ? null : targets[0]);
+  if (!picked) return undefined;
   const id = picked.id;
   badgeTargets.set(key, id);
 
-  const hrefRes = await cdp({
-    Eval: "(function(){ const l=document.querySelector('link[rel*=\"icon\"]'); return l ? l.href : ''; })()",
-    Target: id, Port: port
-  });
-  const href = String(hrefRes.text || '').trim().split('\n')[0].trim();
-  if (!/^https?:/.test(href)) return;
-
-  let dataUrl = badgeDataUrls.get(href);
-  if (!dataUrl) {
-    const response = await fetch(href);
-    if (!response.ok) return;
-    const favPath = join(tmpdir(), `dsh-favicon-${Date.now()}`);
-    writeFileSync(favPath, Buffer.from(await response.arrayBuffer()));
-    const outPath = `${favPath}.b64`;
-    const python = badgePythonPath();
-    if (!python) return;
-    execFileSync(python, [FAVICON_COMPOSITE, favPath, outPath], { timeout: 20000 });
-    dataUrl = `data:image/png;base64,${readFileSync(outPath, 'utf8').trim()}`;
-    badgeDataUrls.set(href, dataUrl);
-    try { unlinkSync(favPath); unlinkSync(`${favPath}.b64.png`); unlinkSync(outPath); } catch (error) {}
-  }
-
-  const swap = `(function(){
-    const d = ${JSON.stringify(dataUrl)};
-    window.__dshTitle = window.__dshTitle || document.title;
-    window.__dshSaved = window.__dshSaved || [];
-    document.querySelectorAll('link[rel*="icon"]').forEach((l) => {
-      if (l.href === d) return;
-      const known = window.__dshSaved.find((x) => x.el === l);
-      if (!known) window.__dshSaved.push({ el: l, href: l.href });
-      l.type = 'image/png'; l.href = d;
-    });
-    if (!window.__dshSaved.length) {
-      const l = document.createElement('link');
-      l.rel = 'icon'; l.type = 'image/png'; l.href = d;
-      document.head.appendChild(l);
+  // The title marker is the universal part: it must apply even when the favicon
+  // cannot be composited (data:/blob icons, offline fetches, no Python).
+  const titleOn = `(function(){
+    if (!window.__dshTitleSaved) {
+      window.__dshTitleSaved = true;
+      window.__dshTitle = document.title;
     }
     document.title = '[DSH working] ' + String(window.__dshTitle || '').slice(0, 30);
-    return 'on';
+    return 'title on';
   })()`;
-  await cdp({ Eval: swap, Target: id, Port: port });
+  await cdp({ Eval: titleOn, Target: id, Port: port });
+
+  try {
+    const hrefRes = await cdp({
+      Eval: "(function(){ const l=document.querySelector('link[rel*=\"icon\"]'); return l ? l.href : ''; })()",
+      Target: id, Port: port
+    });
+    const href = String(hrefRes.text || '').trim().split('\n')[0].trim();
+    if (!/^https?:/.test(href)) return id;
+
+    let dataUrl = badgeDataUrls.get(href);
+    if (!dataUrl) {
+      const response = await fetch(href);
+      if (!response.ok) return id;
+      const favPath = join(tmpdir(), `dsh-favicon-${Date.now()}`);
+      writeFileSync(favPath, Buffer.from(await response.arrayBuffer()));
+      const outPath = `${favPath}.b64`;
+      const python = badgePythonPath();
+      if (!python) return id;
+      execFileSync(python, [FAVICON_COMPOSITE, favPath, outPath], { timeout: 20000 });
+      dataUrl = `data:image/png;base64,${readFileSync(outPath, 'utf8').trim()}`;
+      badgeDataUrls.set(href, dataUrl);
+      try { unlinkSync(favPath); unlinkSync(`${favPath}.b64.png`); unlinkSync(outPath); } catch (error) {}
+    }
+
+    const swap = `(function(){
+      const d = ${JSON.stringify(dataUrl)};
+      window.__dshSaved = window.__dshSaved || [];
+      document.querySelectorAll('link[rel*="icon"]').forEach((l) => {
+        if (l.href === d) return;
+        const known = window.__dshSaved.find((x) => x.el === l);
+        if (!known) window.__dshSaved.push({ el: l, href: l.href, type: l.type });
+        l.type = 'image/png';
+        l.href = d;
+      });
+      if (!window.__dshSaved.length) {
+        const l = document.createElement('link');
+        l.rel = 'icon'; l.type = 'image/png'; l.href = d;
+        document.head.appendChild(l);
+      }
+      return 'favicon on';
+    })()`;
+    await cdp({ Eval: swap, Target: id, Port: port });
+  } catch (error) {
+    // The title marker is already applied; a failed composite must not undo it.
+  }
+  return id;
 }
 
 async function cdpBadgeOff(port, ref) {
@@ -263,7 +297,10 @@ function repairText(value) {
 function captionFor(name, args = {}) {
   // The agent supplies a 1-3 word intent; the caption shows that instead of
   // coordinates, so the user reads the purpose of the action.
-  const intent = repairText(args.intent).trim().slice(0, 40);
+  // Captions are English-only: an intent with non-ASCII characters is dropped
+  // rather than shown (a non-English caption is worse than the bare verb).
+  const rawIntent = repairText(args.intent).trim().slice(0, 40);
+  const intent = /^[\x20-\x7E]+$/.test(rawIntent) ? rawIntent : '';
   if (intent) {
     const verb = {
       computer_shot: 'screenshot', computer_click: 'click', computer_drag: 'drag',
@@ -281,8 +318,8 @@ function captionFor(name, args = {}) {
     case 'computer_shot': return `screenshot${where}`;
     case 'computer_click': return `click ${args.x ?? '?'},${args.y ?? '?'}${where}`;
     case 'computer_drag': return `drag ${args.x ?? '?'},${args.y ?? '?'} -> ${args.x2 ?? '?'},${args.y2 ?? '?'}`;
-    case 'computer_type': return `type "${String(args.text || '').slice(0, 24)}"`;
-    case 'computer_key': return `key ${String(args.text || '').slice(0, 20)}`;
+    case 'computer_type': return 'type';
+    case 'computer_key': return 'key';
     case 'computer_scroll': return `scroll ${args.delta ?? ''}${where}`;
     case 'computer_focus': return `focus${where}`;
     case 'computer_window': return `window ${args.op || 'normal'}${where}`;
@@ -662,19 +699,30 @@ export function apply(ctx, config = {}) {
               // Whole-screen input and a fresh ESC stop both require the user's consent.
               const screenWide = SCREEN_INPUT_TOOLS.has(spec.name) && !args.window && !args.pid;
               const consent = args.user_ready === true;
+              // The stop is consumed first and always reported: otherwise a call
+              // with user_ready silently swallowed the ESC the user pressed.
+              if (stopRequested()) {
+                return {
+                  ok: false,
+                  text: 'STOPPED: the user pressed ESC and the running action was cancelled. Check with the user before continuing (retry with user_ready: true only after they agree).'
+                };
+              }
               if (screenWide && !consent) {
                 return {
                   ok: false,
                   text: 'REFUSED: this acts on the whole screen. Ask the user to confirm (the on-screen banner "DeepSeek using your computer" shows while you work) and retry with user_ready: true. For a single app, pass window or pid instead - that needs no confirmation.'
                 };
               }
-              if (stopRequested() && !consent) {
-                return {
-                  ok: false,
-                  text: 'STOPPED: the user pressed ESC and the running action was cancelled. Check with the user before continuing.'
-                };
-              }
               if (consent) clearStop();
+
+              // Start the indicator BEFORE the action, not after it: on a cold
+              // start the banner and the ESC listener must exist while the input
+              // runs. The engine's geometry line only arrives at process close.
+              if (screenWide && CUA_OVERLAY) {
+                const point = Number.isFinite(args.x) && Number.isFinite(args.y) ? `${args.x},${args.y}` : '';
+                pushOverlay(0, '', point, captionFor(spec.name, args), 'screen');
+                await ensureOverlay();
+              }
 
               const call = spec.run(args || {});
               if (call && call.cdp) {
@@ -682,8 +730,9 @@ export function apply(ctx, config = {}) {
                 // Tab indicator: badge on the favicon of the tab we are working
                 // with. The restore timer is armed AFTER the action completes, so
                 // a long call (perf/trace) does not drop the badge mid-work.
+                let badgeId;
                 if (c.action !== 'list') {
-                  await cdpBadgeOn(c.port || 9222, c.target).catch((e) => console.warn('[dsh-computer-use] badge:', String(e && e.message || e).slice(0, 160)));
+                  badgeId = await cdpBadgeOn(c.port || 9222, c.target).catch((e) => { console.warn('[dsh-computer-use] badge:', String(e && e.message || e).slice(0, 160)); return undefined; });
                 }
                 let result;
                 try {
@@ -701,7 +750,7 @@ export function apply(ctx, config = {}) {
                     ...(c.action === 'type' ? { Type: c.text } : {}),
                     ...(c.action === 'key' ? { Key: c.keys } : {}),
                     ...(c.action === 'scroll' ? { Scroll: `${c.x},${c.y}`, Delta: c.delta || -300 } : {}),
-                    ...(c.target ? { Target: c.target } : {})
+                    ...(badgeId ? { Target: badgeId } : c.target ? { Target: c.target } : {})
                   });
                 } finally {
                   if (c.action !== 'list') {
@@ -737,6 +786,11 @@ export function apply(ctx, config = {}) {
                 } else if (screenWide && CUA_OVERLAY) {
                   const point = Number.isFinite(args.x) && Number.isFinite(args.y) ? `${args.x},${args.y}` : '';
                   pushOverlay(0, '', point, caption, 'screen');
+                } else if (CUA_OVERLAY) {
+                  // A passive call without a target must also clear a previous
+                  // whole-screen state, otherwise the banner and ESC listener
+                  // stay alive for the 90 s TTL while nothing is being driven.
+                  pushOverlay(0, '', '', caption, 'window');
                 }
                 if (parsed.rect) result.text = parsed.text;
               }

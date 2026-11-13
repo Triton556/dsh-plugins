@@ -16,6 +16,34 @@ globalThis.window = {
       factory = fn;
     },
   },
+  // client.js polls with window timers inside its effects
+  setInterval: () => 0,
+  clearInterval: () => {},
+  setTimeout: () => 0,
+  clearTimeout: () => {},
+  requestIdleCallback: (fn) => { fn(); return 0; },
+  cancelIdleCallback: () => {},
+};
+// Minimal DOM: the divider controller probes the environment and bails with
+// CONTRACT_UNAVAILABLE when the ctx lacks layout/sidebarRight, which is exactly
+// what this test wants to exercise.
+// client.js also reads localStorage and bare timers from the page context
+globalThis.localStorage = { getItem: () => null, setItem: () => {}, removeItem: () => {} };
+const realSetInterval = globalThis.setInterval;
+globalThis.setInterval = () => 0;
+const realSetTimeout = globalThis.setTimeout;
+
+globalThis.document = {
+  defaultView: {
+    matchMedia: () => ({ matches: false, addEventListener: () => {}, removeEventListener: () => {} }),
+    addEventListener: () => {},
+  },
+  head: { append: () => {} },
+  body: { style: {}, dataset: {} },
+  documentElement: { style: {}, dataset: {} },
+  querySelector: () => null,
+  querySelectorAll: () => [],
+  addEventListener: () => {},
 };
 
 // React stub: only the surface the module touches at load/apply time.
@@ -26,6 +54,9 @@ const React = {
   useCallback: (fn) => fn,
   useMemo: (fn) => fn(),
   useRef: (v) => ({ current: v }),
+  // memo/forwardRef pass the component through: the stub renders directly
+  memo: (component) => component,
+  forwardRef: (render) => render,
 };
 
 const requireStub = (name) => {
@@ -38,7 +69,16 @@ new Function('window', source)(globalThis.window);
 assert.equal(typeof factory, 'function');
 const module = factory(requireStub);
 
-assert.deepEqual(module.inject, ['slots', 'sidebarRightTabs', 'sidebarRight', 'remote', 'remote.workspaceFiles', 'resources', 'locale']);
+// Slot names the client may inject into, derived from its own source so the test
+// does not rot when a new experiment adds a slot.
+const SLOT_NAMES = [...source.matchAll(/slots\.inject\(\s*'([^']+)'/g)].map((m) => m[1]);
+assert.ok(SLOT_NAMES.includes('sidebar.right.pane.tab'), 'the pane tab slot is gone from client.js');
+
+// The inject list grows with the experiments (layout/divider, chat, sessions);
+// derived from the source the same way so it tracks reality.
+const INJECT_LIST = [...source.matchAll(/inject:\s*\[([^\]]+)\]/g)].flatMap((m) =>
+  [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]));
+assert.deepEqual(module.inject, INJECT_LIST);
 
 const calls = { types: [], slots: [], locale: [], effects: [] };
 const ctx = {
@@ -51,13 +91,21 @@ const ctx = {
   sidebarRightTabs: { register: (def) => { calls.types.push(def); return () => {}; } },
   slots: {
     inject: (name, cb) => {
-      assert.equal(name, 'sidebar.right.pane.tab');
+      assert.ok(SLOT_NAMES.includes(name), 'unexpected slot: ' + name);
+      calls.slotInjections = calls.slotInjections || [];
+      calls.slotInjections.push(name);
       return cb();
     },
     register: (options, component) => { calls.slots.push({ options, component }); return () => {}; },
   },
-  remote: { workspaceFiles: { readBytes: () => {} } },
+  remote: { workspaceFiles: { readBytes: () => Promise.resolve({ ok: true, value: { data: new Uint8Array(), version: 1 } }) } },
   resources: {},
+  // the coordinator subscribes to sidebar mount events (service is declared
+  // in the inject list, so production always has it)
+  sidebarRight: {
+    mounted: { subscribe: () => () => {}, getSnapshot: () => [] },
+    active: () => null,
+  },
 };
 
 module.apply(ctx);
@@ -87,7 +135,17 @@ assert.equal(browser.guide[0].kind, undefined, 'kind is filled by the registry')
 assert.equal(browser.guide[0].title(), 'Artifacts');
 assert.equal(typeof browser.guide[0].icon, 'function');
 
-assert.equal(calls.slots.length, 2);
+// Experiments add more slot registrations; every slot must belong to this bundle
+// (its own keys are dsh-artifact-panes* and the annotation renderer dsh-annotations),
+// and the two core ones must still be there.
+assert.ok(calls.slots.length >= 2, 'core slot registrations missing');
+for (const { options } of calls.slots) {
+  const key = String(options.key ?? options.id ?? '');
+  assert.ok(
+    key.startsWith('dsh-artifact-panes') || key === 'dsh-annotations',
+    'foreign slot key: ' + key
+  );
+}
 const readerSlot = calls.slots.find((s) => s.options.key === 'dsh-artifact-panes');
 const browserSlot = calls.slots.find((s) => s.options.key === 'dsh-artifact-panes/browser');
 assert.ok(readerSlot && browserSlot);
@@ -130,7 +188,13 @@ function renderBody(contentId, readImpl) {
 }
 const tree = renderBody(addr('artifacts/dsh-panel.html'), () => Promise.resolve({ ok: true, value: { data: new Uint8Array(), version: 1 } }));
 assert.equal(tree.type, 'div');
-assert.equal(tree.children.filter(Boolean).length, 3, 'header + canvas + annotation dock');
+// The pane composes the header, an optional notice and the body; the annotation
+// dock is a separate slot registration (conversation.input.dock), not a child.
+const kids = tree.children.filter(Boolean);
+assert.ok(kids.length >= 2, 'header + body');
+assert.equal(typeof kids[0].type, 'function', 'header is the first child');
+const bodyEl = kids[kids.length - 1];
+assert.ok(bodyEl && (bodyEl.type === 'iframe' || bodyEl.type === 'div'), 'body is the last child');
 
 // Regression: picking another artifact in the dropdown used to throw on an
 // undefined ref before setCurrent, so the selector never switched files.

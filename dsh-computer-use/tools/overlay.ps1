@@ -218,7 +218,7 @@ $timer.Add_Tick({
 
   # ESC stops the takeover: write a marker the plugin reads on the next call and
   # hide the overlay until the state changes again.
-  if ($visible -and $screenMode) {
+  if ($visible) {
     $esc = [CuaWpf.Native]::GetAsyncKeyState(0x1B)
     if (($esc -band 0x8001) -ne 0 -and $now - $script:lastEsc -gt 700) {
       $script:lastEsc = $now
@@ -226,8 +226,11 @@ $timer.Add_Tick({
       # in-flight engine invocations, then leave a one-shot marker that tells the
       # agent why its call died. No timed lockout of anything.
       try {
-        $engines = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
-          Where-Object { $_.CommandLine -match '-File\s+\S*cua\.ps1' }
+        # Engine calls run as powershell -File cua.ps1; CDP actions run as node cdp.mjs.
+        $engines = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+          Where-Object { $_.CommandLine -match '-File\s+\S*cua\.ps1' })
+        $engines += @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
+          Where-Object { $_.CommandLine -match 'cdp\.mjs' })
         foreach ($proc in $engines) {
           try { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
         }
@@ -258,11 +261,11 @@ $timer.Add_Tick({
   }
 
 
+  if ($visible -and $snapshot.label) { $captionText.Text = [string]$snapshot.label }
   if ($visible -and $snapshot.cursor) {
     $script:goalX = [double]$snapshot.cursor.x - $left
     $script:goalY = [double]$snapshot.cursor.y - $top
     if ($script:curX -lt 0) { $script:curX = $script:goalX; $script:curY = $script:goalY }
-    if ($snapshot.label) { $captionText.Text = [string]$snapshot.label }
     if ($snapshot.updated -ne $script:lastStamp) {
       $script:lastStamp = $snapshot.updated
       $script:rock = 0.0
