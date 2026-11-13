@@ -122,14 +122,25 @@ function Focus-Window([System.IntPtr]$h) {
   for ($i = 0; $i -lt 3; $i++) { [void][Cua.Native]::SetForegroundWindow($h); Start-Sleep -Milliseconds 60 }
 }
 
+function Get-VisibleRect([System.IntPtr]$h) {
+  # The visible frame: GetWindowRect includes the invisible DWM border, which
+  # shifted window-relative coordinates by about 8 px.
+  $r = New-Object Cua.Native+RECT
+  try {
+    $ok = [Cua.Native]::DwmGetWindowAttribute($h, [Cua.Native]::DWMWA_EXTENDED_FRAME_BOUNDS, [ref]$r, 16)
+    if ($ok -eq 0 -and $r.Right -gt $r.Left) { return $r }
+  } catch {}
+  [void][Cua.Native]::GetWindowRect($h, [ref]$r)
+  return $r
+}
+
 function Convert-Point([System.IntPtr]$h, [int]$px, [int]$py) {
   if ($h -eq [System.IntPtr]::Zero) { return @{ X = $px; Y = $py } }
   $p = New-Object Cua.Native+POINT
   $p.X = $px; $p.Y = $py
   if ($Client) { [void][Cua.Native]::ClientToScreen($h, [ref]$p) }
   else {
-    $r = New-Object Cua.Native+RECT
-    [void][Cua.Native]::GetWindowRect($h, [ref]$r)
+    $r = Get-VisibleRect $h
     $p.X = $r.Left + $px; $p.Y = $r.Top + $py
   }
   return @{ X = $p.X; Y = $p.Y }
