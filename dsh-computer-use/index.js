@@ -395,7 +395,7 @@ export const TOOLS = [
     name: 'computer_drag',
     description: 'Press, move and release between two points (coordinates are window-relative when "window" is given).',
     parameters: {
-      intent: { type: 'string', description: 'One to three words of intent for the on-screen caption, e.g. "open settings", "send message"' },
+      intent: { type: 'string', description: 'One to three ENGLISH words of intent for the on-screen caption, e.g. "open settings", "send message". Never use another language: captions are English-only.' },
       user_ready: { type: 'boolean', description: 'Set true only after the user agreed to let the agent drive the whole screen (not needed when window/pid is given)' },
       window: { type: 'string' },
       pid: { type: 'integer', description: 'Target this process id' },
@@ -409,28 +409,34 @@ export const TOOLS = [
   },
   {
     name: 'computer_type',
-    description: 'Type text into the focused control. Non-ASCII needs unicode: true (plain typing uses SendKeys and mangles it).',
+    description: 'Type text into the focused control. With "window" given the window is focused first, so the text lands in the right app. Non-ASCII needs unicode: true (plain typing uses SendKeys and mangles it).',
     parameters: {
-      intent: { type: 'string', description: 'One to three words of intent for the on-screen caption, e.g. "open settings", "send message"' },
+      intent: { type: 'string', description: 'One to three ENGLISH words of intent for the on-screen caption, e.g. "open settings", "send message". Never use another language: captions are English-only.' },
       user_ready: { type: 'boolean', description: 'Set true only after the user agreed to let the agent drive the whole screen (not needed when window/pid is given)' },
+      window: { type: 'string', description: 'Window title or process name substring; focused before typing' },
+      pid: { type: 'integer', description: 'Target this process id instead of a title' },
       text: { type: 'string', description: 'Text to type' },
       unicode: { type: 'boolean', description: 'SendInput with unicode codepoints (non-ASCII)' }
     },
-    run: (a) => ({ action: 'type', text: a.text, unicode: a.unicode })
+    run: (a) => ({ action: 'type', window: a.window, processId: a.pid, text: a.text, unicode: a.unicode })
   },
   {
     name: 'computer_key',
-    description: 'Send a key combination in SendKeys syntax: "^c" copy, "%{F4}" alt+F4, "{ENTER}", "^+{ESC}".',
+    description: 'Send a key combination in SendKeys syntax: "^c" copy, "%{F4}" alt+F4, "{ENTER}", "^+{ESC}". With "window" given the window is focused first.',
     parameters: {
-      intent: { type: 'string', description: 'One to three words of intent for the on-screen caption, e.g. "open settings", "send message"' },
-      user_ready: { type: 'boolean', description: 'Set true only after the user agreed to let the agent drive the whole screen (not needed when window/pid is given)' }, text: { type: 'string', description: 'SendKeys sequence' } },
-    run: (a) => ({ action: 'key', text: a.text })
+      intent: { type: 'string', description: 'One to three ENGLISH words of intent for the on-screen caption, e.g. "open settings", "send message". Never use another language: captions are English-only.' },
+      user_ready: { type: 'boolean', description: 'Set true only after the user agreed to let the agent drive the whole screen (not needed when window/pid is given)' },
+      window: { type: 'string', description: 'Window title or process name substring; focused before sending' },
+      pid: { type: 'integer', description: 'Target this process id instead of a title' },
+      text: { type: 'string', description: 'SendKeys sequence' }
+    },
+    run: (a) => ({ action: 'key', window: a.window, processId: a.pid, text: a.text })
   },
   {
     name: 'computer_scroll',
     description: 'Scroll the mouse wheel at a point. Negative delta scrolls down.',
     parameters: {
-      intent: { type: 'string', description: 'One to three words of intent for the on-screen caption, e.g. "open settings", "send message"' },
+      intent: { type: 'string', description: 'One to three ENGLISH words of intent for the on-screen caption, e.g. "open settings", "send message". Never use another language: captions are English-only.' },
       user_ready: { type: 'boolean', description: 'Set true only after the user agreed to let the agent drive the whole screen (not needed when window/pid is given)' },
       window: { type: 'string' },
       pid: { type: 'integer', description: 'Target this process id' },
@@ -672,42 +678,39 @@ export function apply(ctx, config = {}) {
               if (call && call.cdp) {
                 const c = call.cdp;
                 // Tab indicator: badge on the favicon of the tab we are working
-                // with; the restore lingers so back-to-back calls do not blink.
+                // with. The restore timer is armed AFTER the action completes, so
+                // a long call (perf/trace) does not drop the badge mid-work.
                 if (c.action !== 'list') {
-                  const badgeKey = `${c.port || 9222}|${c.target || ''}`;
-                  const pending = badgeTimers.get(badgeKey);
-                  if (pending) { clearTimeout(pending); badgeTimers.delete(badgeKey); }
-                  await cdpBadgeOn(c.port || 9222, c.target).catch((e) => console.warn("[dsh-computer-use] badge:", String(e && e.message || e).slice(0, 160)));
-                  badgeTimers.set(badgeKey, setTimeout(() => {
-                    badgeTimers.delete(badgeKey);
-                    cdpBadgeOff(c.port || 9222, c.target).catch((e) => console.warn('[dsh-computer-use] badge off error:', String(e && e.message || e).slice(0, 140)));
-                  }, BADGE_LINGER_MS));
+                  await cdpBadgeOn(c.port || 9222, c.target).catch((e) => console.warn('[dsh-computer-use] badge:', String(e && e.message || e).slice(0, 160)));
                 }
-                const result = await cdp({
-                  port: c.port,
-                  ...(c.action === 'list' ? { List: true } : {}),
-                  ...(c.action === 'eval' ? { Eval: c.expression } : {}),
-                  ...(c.action === 'dom' ? { Dom: true } : {}),
-                  ...(c.action === 'shot' ? { Shot: c.path } : {}),
-                  ...(c.action === 'perf' ? { Perf: c.duration || 3000 } : {}),
-                  ...(c.action === 'trace' ? { Trace: c.path, Perf: c.duration || 3000 } : {}),
-                  ...(c.action === 'navigate' ? { Navigate: c.url } : {}),
-                  ...(c.action === 'click' ? { Click: `${c.x},${c.y}` } : {}),
-                  ...(c.action === 'drag' ? { Drag: `${c.x},${c.y},${c.x2},${c.y2}` } : {}),
-                  ...(c.action === 'type' ? { Type: c.text } : {}),
-                  ...(c.action === 'key' ? { Key: c.keys } : {}),
-                  ...(c.action === 'scroll' ? { Scroll: `${c.x},${c.y}`, Delta: c.delta || -300 } : {}),
-                  ...(c.target ? { Target: c.target } : {})
-                });
-                const badgeKey2 = `${c.port || 9222}|${c.target || ''}`;
-                if (c.action !== 'list') {
-                  const pending = badgeTimers.get(badgeKey2);
-                  if (pending) clearTimeout(pending);
-                  badgeTimers.set(badgeKey2, setTimeout(() => {
-                    console.warn('[dsh-computer-use] badge linger restore');
-                    badgeTimers.delete(badgeKey2);
-                    cdpBadgeOff(c.port || 9222, c.target).catch(() => {});
-                  }, BADGE_LINGER_MS));
+                let result;
+                try {
+                  result = await cdp({
+                    port: c.port,
+                    ...(c.action === 'list' ? { List: true } : {}),
+                    ...(c.action === 'eval' ? { Eval: c.expression } : {}),
+                    ...(c.action === 'dom' ? { Dom: true } : {}),
+                    ...(c.action === 'shot' ? { Shot: c.path } : {}),
+                    ...(c.action === 'perf' ? { Perf: c.duration || 3000 } : {}),
+                    ...(c.action === 'trace' ? { Trace: c.path, Perf: c.duration || 3000 } : {}),
+                    ...(c.action === 'navigate' ? { Navigate: c.url } : {}),
+                    ...(c.action === 'click' ? { Click: `${c.x},${c.y}` } : {}),
+                    ...(c.action === 'drag' ? { Drag: `${c.x},${c.y},${c.x2},${c.y2}` } : {}),
+                    ...(c.action === 'type' ? { Type: c.text } : {}),
+                    ...(c.action === 'key' ? { Key: c.keys } : {}),
+                    ...(c.action === 'scroll' ? { Scroll: `${c.x},${c.y}`, Delta: c.delta || -300 } : {}),
+                    ...(c.target ? { Target: c.target } : {})
+                  });
+                } finally {
+                  if (c.action !== 'list') {
+                    const badgeKey = `${c.port || 9222}|${c.target || ''}`;
+                    const pending = badgeTimers.get(badgeKey);
+                    if (pending) clearTimeout(pending);
+                    badgeTimers.set(badgeKey, setTimeout(() => {
+                      badgeTimers.delete(badgeKey);
+                      cdpBadgeOff(c.port || 9222, c.target).catch(() => {});
+                    }, BADGE_LINGER_MS));
+                  }
                 }
                 return result;
               }
@@ -722,13 +725,14 @@ export function apply(ctx, config = {}) {
               const result = await engine(engineArgs);
               if (result && result.text) {
                 const parsed = stripOverlay(result.text);
-                // Whole-screen calls resolve no window geometry, so the state is
-                // written from the tool arguments: the banner has to appear too.
-                const screenOnly = !args.window && !args.pid;
                 const caption = captionFor(spec.name, args);
+                // The banner (mode 'screen') is only for input that takes over the
+                // whole screen. A window-targeted call glows on that window (mode
+                // 'window'); passive calls without a target (a full-screen shot,
+                // a window listing) show nothing - they do not control anything.
                 if (parsed.rect && CUA_OVERLAY) {
-                  pushOverlay(parsed.hwnd, parsed.rect, parsed.click, caption, screenOnly ? 'screen' : 'window');
-                } else if (screenOnly && CUA_OVERLAY) {
+                  pushOverlay(parsed.hwnd, parsed.rect, parsed.click, caption, 'window');
+                } else if (screenWide && CUA_OVERLAY) {
                   const point = Number.isFinite(args.x) && Number.isFinite(args.y) ? `${args.x},${args.y}` : '';
                   pushOverlay(0, '', point, caption, 'screen');
                 }

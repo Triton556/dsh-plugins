@@ -539,15 +539,12 @@ switch ($Action) {
       $match = $items | Where-Object { $_.Current.Name -like "*$Text*" } | Select-Object -First 1
       if (-not $match) { continue }
       $hw = [System.IntPtr]$t.hwnd
-      Focus-Window $hw
-      Start-Sleep -Milliseconds 120
+      # No Focus-Window here: SelectionItemPattern selects the tab in a background
+      # window; focusing would steal the user's foreground (see Select-TabItem's
+      # fallback for the rare case where the pattern is unavailable).
       Select-TabItem $match $hw
       Start-Sleep -Milliseconds 200
-      # The indicator draws its arrow over this tab's icon: emit the icon rect.
-      $tr = $match.Current.BoundingRectangle
-      $icon = "{0},{1},{2},{3}" -f ([int]($tr.Left + 10)), ([int]($tr.Top + 3)), ([int]($tr.Left + 34)), ([int]($tr.Bottom - 3))
       "selected tab: $($match.Current.Name) in hwnd=$($t.hwnd)"
-      "[overlay-tab] hwnd=$($t.hwnd) rect=$icon"
       $done = $true
       break
     }
@@ -736,12 +733,18 @@ switch ($Action) {
   }
   'type' {
     if ($Text) {
+      # With a window target, focus it first so the text lands in the right app;
+      # without one the keys go to whatever is focused (whole-screen consent).
+      if ($h -ne [System.IntPtr]::Zero) { Focus-Window $h; Start-Sleep -Milliseconds 80 }
       if ($Unicode) { Send-UnicodeText $Text }
       else { [System.Windows.Forms.SendKeys]::SendWait($Text); "typed $($Text.Length) chars" }
     }
   }
   'key' {
-    if ($Text) { [System.Windows.Forms.SendKeys]::SendWait($Text); "sent $Text" }
+    if ($Text) {
+      if ($h -ne [System.IntPtr]::Zero) { Focus-Window $h; Start-Sleep -Milliseconds 80 }
+      [System.Windows.Forms.SendKeys]::SendWait($Text); "sent $Text"
+    }
   }
   'scroll' {
     $pt = Convert-Point $h $X $Y
