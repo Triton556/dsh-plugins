@@ -222,9 +222,20 @@ $timer.Add_Tick({
     $esc = [CuaWpf.Native]::GetAsyncKeyState(0x1B)
     if (($esc -band 0x8001) -ne 0 -and $now - $script:lastEsc -gt 700) {
       $script:lastEsc = $now
+      # ESC cancels what is happening NOW (Codex/Claude behaviour): kill the
+      # in-flight engine invocations, then leave a one-shot marker that tells the
+      # agent why its call died. No timed lockout of anything.
+      try {
+        $engines = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+          Where-Object { $_.CommandLine -match '-File\s+\S*cua\.ps1' }
+        foreach ($proc in $engines) {
+          try { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
+        }
+        Note ('esc pressed - killed ' + @($engines).Count + ' engine process(es)')
+      } catch {}
       try {
         [System.IO.File]::WriteAllText($StopPath, ('{"at":' + $now + '}'), (New-Object System.Text.UTF8Encoding($false)))
-        Note 'esc pressed - stop marker written'
+        Note 'esc pressed - one-shot stop marker written'
       } catch {}
       $script:stoppedAt = $now
     }

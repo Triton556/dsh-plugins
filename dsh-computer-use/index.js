@@ -301,17 +301,18 @@ function captionFor(name, args = {}) {
 }
 
 
-// ESC in the on-screen banner writes a stop marker; the next call refuses to act
-// until the agent has asked the user and passed user_ready: true.
+// ESC is edge-triggered, like Codex/Claude computer use: the overlay daemon kills
+// the in-flight engine process the moment ESC is pressed, then leaves this marker.
+// The next call consumes it once, reports STOPPED so the agent knows what happened,
+// and everything after that works normally - no timed lockout.
 const STOP_MARKER = join(tmpdir(), 'dsh-cua-stop.json');
-const STOP_FRESH_MS = 15 * 60 * 1000;
 
 function stopRequested() {
   try {
     if (!existsSync(STOP_MARKER)) return false;
     const raw = JSON.parse(readFileSync(STOP_MARKER, 'utf8'));
-    const at = Number(raw && raw.at) || 0;
-    return at > 0 && Date.now() - at <= STOP_FRESH_MS;
+    unlinkSync(STOP_MARKER);
+    return Number(raw && raw.at) > 0;
   } catch (error) {
     return false;
   }
@@ -345,8 +346,9 @@ const CUA_PROMPT = [
   '  keyboard away from the user. Before the first such call, ask whether they are ready to',
   '  leave the machine alone, then pass user_ready: true. A banner "DeepSeek using your',
   '  computer" appears on screen meanwhile.',
-  '- If the user presses ESC, the next call fails with STOPPED and the marker stays for 15',
-  '  minutes: ask whether to continue, then retry with user_ready: true.',
+  '- If the user presses ESC, the in-flight action is cancelled immediately and the',
+  '  next call reports STOPPED once. Ask the user how to continue - there is no',
+  '  lockout, and user_ready is only needed again for whole-screen input.',
   '- Never fight the user for the cursor: if they take over, stop and ask.',
   '- Give input tools a short `intent` (1-3 ENGLISH words: "open settings", "send message"): it is',
   '  what the on-screen caption shows next to the cursor. Write captions, labels and tool text in',
@@ -669,7 +671,7 @@ export function apply(ctx, config = {}) {
               if (stopRequested() && !consent) {
                 return {
                   ok: false,
-                  text: 'STOPPED: the user pressed ESC. Ask whether to continue before touching the computer again; retry with user_ready: true if they agree.'
+                  text: 'STOPPED: the user pressed ESC and the running action was cancelled. Check with the user before continuing.'
                 };
               }
               if (consent) clearStop();

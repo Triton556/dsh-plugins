@@ -44,9 +44,10 @@ While the agent drives the machine, the user always knows what is happening:
 - **whole-screen input** (`click/type/scroll` without a window target) is refused
   with `REFUSED` until the agent asks the user and passes `user_ready: true`;
   a banner "DeepSeek using your computer / ESC to stop" is shown while it runs;
-- **ESC** writes a stop marker: the next call fails with `STOPPED` and every call
-  stays blocked for 15 minutes until the agent asks again and passes
-  `user_ready: true`;
+- **ESC** cancels what is happening now, exactly like Codex/Claude computer use:
+  the in-flight engine process is killed at once and the next call reports
+  `STOPPED` a single time, so the agent knows the user intervened. There is no
+  timed lockout - the agent asks the user and continues;
 - **one app or one browser tab** needs no confirmation, and the indicator adapts:
   - a soft DeepSeek-blue glow on the screen edges plus a gliding whale-cursor with
     a short English `intent` caption ("open settings") while the controlled window

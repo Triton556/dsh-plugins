@@ -55,15 +55,15 @@ check('refusal explains the way out', refused && /user_ready: true/.test(refused
 const scoped = await click.execute({ window: 'no-such-window-xyz', x: 1, y: 1 });
 check('window-scoped click is not gated', scoped && !/^REFUSED/.test(scoped.text), scoped && scoped.text);
 
-// 3. a fresh ESC marker blocks everything until the agent confirms
+// 3. ESC is one-shot: the marker blocks exactly one call, then it is consumed
 const marker = join(tmpdir(), 'dsh-cua-stop.json');
 writeFileSync(marker, JSON.stringify({ at: Date.now() }), 'utf8');
 const stopped = await click.execute({ window: 'no-such-window-xyz', x: 1, y: 1 });
-check('fresh ESC stop blocks the next call', stopped && stopped.ok === false && /^STOPPED/.test(stopped.text), stopped && stopped.text);
+check('ESC stop blocks the next call', stopped && stopped.ok === false && /^STOPPED/.test(stopped.text), stopped && stopped.text);
+check('marker consumed by that call', !existsSync(marker));
 
-const resumed = await click.execute({ window: 'no-such-window-xyz', x: 1, y: 1, user_ready: true });
-check('user_ready clears the stop marker', resumed && !/^STOPPED/.test(resumed.text), resumed && resumed.text);
-check('marker removed after consent', !existsSync(marker));
+const after = await click.execute({ window: 'no-such-window-xyz', x: 1, y: 1 });
+check('no lockout - the call after STOPPED works', after && !/^STOPPED/.test(after.text), after && after.text);
 
 try { if (existsSync(marker)) unlinkSync(marker); } catch (error) {}
 
