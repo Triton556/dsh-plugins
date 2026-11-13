@@ -3156,14 +3156,6 @@ function createDividerController({ read, bridge, visual, motion, env, report = (
     const handle = { frame, timer: null, cancel: null };
     const run = (reason) => {
       if (settled) return;
-      if (disposed) {
-        settled = true;
-        try { handle.cancelQuiet(); } catch (e) {}
-        pendingCommit = null;
-        releasePin(frame, false, visual);
-        emit('DEFERRED_COMMIT_SKIPPED', { reason, disposed: true });
-        return;
-      }
       settled = true;
       try { handle.cancelQuiet(); } catch (e) {}
       pendingCommit = null;
@@ -3407,7 +3399,7 @@ function createDividerController({ read, bridge, visual, motion, env, report = (
     },
     validate() { if (active) current(active); },
     cancel(reason = 'CANCELLED') { abort(reason); },
-    dispose() { abort('DISPOSED'); disposed = true; try { cancelPendingCommit(); } catch (e) {} }
+    dispose() { abort('DISPOSED'); disposed = true; }
   };
 }
 
