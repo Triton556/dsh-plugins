@@ -2,7 +2,7 @@
 //
 // Every tool answers { ok, text }; screenshots and clips also carry an inline
 // attachment so the chat can show the picture without a second tool call.
-import { appendFileSync, readFileSync, existsSync, writeFileSync, unlinkSync } from 'node:fs';
+import { appendFileSync, readFileSync, existsSync, writeFileSync, unlinkSync, statSync } from 'node:fs';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { extname, join } from 'node:path';
@@ -73,16 +73,42 @@ const OVERLAY_PID = join(tmpdir(), 'dsh-cua-overlay.pid');
 const OVERLAY_TTL_MS = 90000;
 const OVERLAY_MARKER = /^\[overlay\] hwnd=(\d+) rect=(-?\d+,-?\d+,-?\d+,-?\d+)(?: click=(-?\d+,-?\d+))?\s*$/m;
 
+const OVERLAY_BUILD = join(tmpdir(), 'dsh-cua-overlay.build');
+
 function overlayAlive() {
   try {
     if (!existsSync(OVERLAY_PID)) return false;
     const pid = Number(readFileSync(OVERLAY_PID, 'utf8').trim());
     if (!Number.isFinite(pid) || pid <= 0) return false;
     process.kill(pid, 0);
+    // A daemon started from older overlay.ps1 keeps its old behaviour (ESC
+    // coverage, kill filter). Compare the stamped build with the script mtime
+    // and restart it instead of silently running stale code.
+    try {
+      const stamped = Number(readFileSync(OVERLAY_BUILD, 'utf8').trim());
+      const current = statSync(fileURLToPath(OVERLAY_SCRIPT)).mtimeMs * 10000;
+      if (!Number.isFinite(stamped) || Math.abs(stamped - current) > 50000) {
+        try { process.kill(pid); } catch (error) {}
+        try { unlinkSync(OVERLAY_PID); } catch (error) {}
+        return false;
+      }
+    } catch (error) {
+      return true;
+    }
     return true;
   } catch (error) {
     return false;
   }
+}
+
+function refreshOverlay() {
+  if (!CUA_OVERLAY) return Promise.resolve();
+  // Renew the daemon's state (and its ESC listener) without changing what it
+  // shows: the last target and label stay, only the timestamp moves.
+  const last = lastOverlay;
+  if (last) pushOverlay(last.hwnd, last.rect, last.click, last.label, last.mode);
+  else pushOverlay(0, '', '', '', 'window');
+  return ensureOverlay();
 }
 
 function ensureOverlay() {
@@ -101,6 +127,7 @@ function ensureOverlay() {
 
 // Show the controlled window + action point; the indicator itself decides whether
 // it is visible (only while that window is in the foreground, or the desktop is).
+let lastOverlay = null;
 function pushOverlay(hwnd, rect, click, label, mode) {
   try {
     const screenMode = mode === 'screen';
@@ -118,6 +145,7 @@ function pushOverlay(hwnd, rect, click, label, mode) {
       mode: screenMode ? 'screen' : 'window'
     };
     writeFileSync(OVERLAY_STATE, JSON.stringify(state), 'utf8');
+    lastOverlay = { hwnd, rect, click, label, mode };
     ensureOverlay();
   } catch (error) {
     console.warn('[dsh-computer-use] overlay state failed:', String(error && error.message || error).slice(0, 160));
@@ -718,10 +746,16 @@ export function apply(ctx, config = {}) {
               // Start the indicator BEFORE the action, not after it: on a cold
               // start the banner and the ESC listener must exist while the input
               // runs. The engine's geometry line only arrives at process close.
-              if (screenWide && CUA_OVERLAY) {
-                const point = Number.isFinite(args.x) && Number.isFinite(args.y) ? `${args.x},${args.y}` : '';
-                pushOverlay(0, '', point, captionFor(spec.name, args), 'screen');
-                await ensureOverlay();
+              if (CUA_OVERLAY) {
+                if (screenWide) {
+                  const point = Number.isFinite(args.x) && Number.isFinite(args.y) ? `${args.x},${args.y}` : '';
+                  pushOverlay(0, '', point, captionFor(spec.name, args), 'screen');
+                  await ensureOverlay();
+                } else {
+                  // The daemon must be listening before the input starts, or ESC
+                  // cannot cancel the very first action of a session.
+                  await refreshOverlay();
+                }
               }
 
               const call = spec.run(args || {});

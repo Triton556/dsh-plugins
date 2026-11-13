@@ -41,7 +41,24 @@ function Note([string]$text) {
   try { Add-Content -LiteralPath $LogPath -Value ((Get-Date -Format 'HH:mm:ss') + ' ' + $text) } catch {}
 }
 try { [System.IO.File]::WriteAllText($PidPath, [string]$PID, (New-Object System.Text.UTF8Encoding($false))) } catch {}
-Note "start pid=$PID"
+# Stamp the running script version: the plugin compares this with overlay.ps1's
+# mtime and restarts a daemon that was started from older code.
+try {
+  $buildStamp = [System.IO.File]::GetLastWriteTimeUtc([string]$PSCommandPath).Ticks
+  [System.IO.File]::WriteAllText((Join-Path $env:TEMP 'dsh-cua-overlay.build'), [string]$buildStamp, (New-Object System.Text.UTF8Encoding($false)))
+} catch {}
+# One daemon per desktop: concurrent calls used to start several copies that
+# fought over the same state file. A named mutex makes the second start exit.
+$script:overlayMutex = $null
+try {
+  $script:overlayMutex = New-Object System.Threading.Mutex($false, 'Global\DshCuaOverlayDaemon')
+  $acquired = $false
+  try { $acquired = $script:overlayMutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $acquired = $true }
+  if (-not $acquired) { Note "another daemon already runs; pid=$PID exits"; exit 0 }
+  Note "start pid=$PID"
+} catch {
+  Note "mutex unavailable; pid=$PID continues"
+}
 
 $v = [System.Windows.Forms.SystemInformation]::VirtualScreen; $screen = [pscustomobject]@{ X = $v.X; Y = $v.Y; Width = $v.Width; Height = $v.Height }
 $left = $screen.X; $top = $screen.Y; $width = $screen.Width; $height = $screen.Height
@@ -216,9 +233,12 @@ $timer.Add_Tick({
   $visible = $fresh -and (ForegroundMatches $snapshot)
   $screenMode = $snapshot -and $snapshot.mode -eq 'screen'
 
-  # ESC stops the takeover: write a marker the plugin reads on the next call and
-  # hide the overlay until the state changes again.
-  if ($visible) {
+  # ESC stops the takeover: kill the in-flight action, write a one-shot marker
+  # the plugin reads on the next call, and hide the overlay until it changes.
+  # Polled while the daemon holds a fresh state (the plugin starts it before
+  # every call), not only while the glow is visible: a window-scoped action whose
+  # window is behind must still be cancellable.
+  if ($visible -or $fresh) {
     $esc = [CuaWpf.Native]::GetAsyncKeyState(0x1B)
     if (($esc -band 0x8001) -ne 0 -and $now - $script:lastEsc -gt 700) {
       $script:lastEsc = $now
@@ -235,12 +255,14 @@ $timer.Add_Tick({
           try { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
         }
         Note ('esc pressed - killed ' + @($engines).Count + ' engine process(es)')
+        if (@($engines).Count -gt 0) {
+          try {
+            [System.IO.File]::WriteAllText($StopPath, ('{"at":' + $now + '}'), (New-Object System.Text.UTF8Encoding($false)))
+            Note 'esc pressed - one-shot stop marker written'
+          } catch {}
+          $script:stoppedAt = $now
+        }
       } catch {}
-      try {
-        [System.IO.File]::WriteAllText($StopPath, ('{"at":' + $now + '}'), (New-Object System.Text.UTF8Encoding($false)))
-        Note 'esc pressed - one-shot stop marker written'
-      } catch {}
-      $script:stoppedAt = $now
     }
   }
   if ($script:stoppedAt -gt 0 -and ($now - $script:stoppedAt) -lt 4000) { $visible = $false }
