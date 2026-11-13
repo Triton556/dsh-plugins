@@ -43,11 +43,16 @@ While the agent drives the machine, the user always knows what is happening:
 
 - **whole-screen input** (`click/type/scroll` without a window target) is refused
   with `REFUSED` until the agent asks the user and passes `user_ready: true`;
-  a banner "DeepSeek using your computer / ESC to stop" is shown while it runs;
+  the banner "DeepSeek using your computer / ESC to stop" and the ESC listener are
+  started *before* the input runs, not after it;
 - **ESC** cancels what is happening now, exactly like Codex/Claude computer use:
-  the in-flight engine process is killed at once and the next call reports
-  `STOPPED` a single time, so the agent knows the user intervened. There is no
-  timed lockout - the agent asks the user and continues;
+  the in-flight engine process (or CDP helper) is killed at once and the next call
+  reports `STOPPED` a single time - including when the agent passed `user_ready`,
+  so an intervention is never swallowed. There is no timed lockout - the agent
+  asks the user and continues;
+- **a window or pid that does not resolve fails closed**: the engine raises
+  `window not found ... refusing to fall back to whole-screen input` instead of
+  acting on the desktop at the given coordinates;
 - **one app or one browser tab** needs no confirmation, and the indicator adapts:
   - a soft DeepSeek-blue glow on the screen edges plus a gliding whale-cursor with
     a short English `intent` caption ("open settings") while the controlled window
