@@ -37,6 +37,29 @@ support), `computer_tabs` / `computer_tab` (browser tabs through UI Automation).
 screenshot a tab, dispatch background input (click/drag/type/key/scroll), sample
 frame timing, write a DevTools trace with a phase breakdown and frame pacing.
 
+## On-screen indicator and consent rules
+
+While the agent drives the machine, the user always knows what is happening:
+
+- **whole-screen input** (`click/type/scroll` without a window target) is refused
+  with `REFUSED` until the agent asks the user and passes `user_ready: true`;
+  a banner "DeepSeek using your computer / ESC to stop" is shown while it runs;
+- **ESC** writes a stop marker: the next call fails with `STOPPED` and every call
+  stays blocked for 15 minutes until the agent asks again and passes
+  `user_ready: true`;
+- **one app or one browser tab** needs no confirmation, and the indicator adapts:
+  - a soft DeepSeek-blue glow on the screen edges plus a gliding whale-cursor with
+    a short English `intent` caption ("open settings") while the controlled window
+    is in front — WPF with real per-pixel alpha, click-through (`HTTRANSPARENT`),
+    auto-started per call, asleep after 5 minutes;
+  - for browser tabs driven through `computer_cdp` the indicator lives **inside
+    the browser**: the tab's own favicon is replaced by a composite of the original
+    icon with the whale cursor on top (fetched, composited outside the browser, all
+    `icon` links swapped), plus a `[DSH working]` title marker; both are restored
+    when the work is done (a linger timer keeps the badge steady between
+    back-to-back calls);
+- captions, labels and tool text are English-only by design.
+
 Design notes worth knowing:
 
 - screenshots of a covered Chromium/Electron window are captured with
@@ -85,6 +108,8 @@ node tools/contract.mjs      # cordis contract: inject(['tools']) → 20 registr
 node tools/real-schema.mjs   # definitions accepted by the real @deepseek-ai/dsh-tools
 node tools/verify.mjs --live # catalogue, argument mapping, engines, occlusion-proof shot
 node tools/text-safety.mjs   # free text with quotes, $(), backticks and Cyrillic
+node tools/text-encoding.mjs # caption text survives a CP1251 round trip
+node tools/consent.mjs       # REFUSED without user_ready, ESC stop marker, restore
 node tools/inline-media.mjs  # screenshots carry an attachment and render an image block
 node tools/scenario.mjs      # silent launch → navigate → background click/type → trace
 node tools/live-tools.mjs    # background drag, frame recording, OCR, wait, clipboard, park
