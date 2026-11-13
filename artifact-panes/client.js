@@ -3273,6 +3273,12 @@ function createDividerController({ read, bridge, visual, motion, env, report = (
         try {
           frame.style.setProperty('--dsh-divider-sidebar', `${Math.round(t.old.sidebar)}px`);
           frame.style.setProperty('--dsh-divider-panel', `${Math.round(target.panelWidth)}px`);
+          // While pinned the artifact iframe takes its width from
+          // --dsh-divider-panel-fixed, whose fallback is 400px: leaving it unset
+          // squeezed the artifact into 400px inside a wider panel (horizontal
+          // scrollbars, blank space on the right). The iframe must fill the
+          // panel; the panel width itself is already pinned above.
+          frame.style.setProperty('--dsh-divider-panel-fixed', '100%');
           frame.setAttribute('data-dsh-divider-live', '');
         } catch (e) {}
         cancelPendingCommit();
