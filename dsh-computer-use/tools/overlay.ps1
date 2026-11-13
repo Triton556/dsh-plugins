@@ -40,13 +40,6 @@ if (-not ('CuaWpf.Native' -as [type])) {
 function Note([string]$text) {
   try { Add-Content -LiteralPath $LogPath -Value ((Get-Date -Format 'HH:mm:ss') + ' ' + $text) } catch {}
 }
-try { [System.IO.File]::WriteAllText($PidPath, [string]$PID, (New-Object System.Text.UTF8Encoding($false))) } catch {}
-# Stamp the running script version: the plugin compares this with overlay.ps1's
-# mtime and restarts a daemon that was started from older code.
-try {
-  $buildStamp = [System.IO.File]::GetLastWriteTimeUtc([string]$PSCommandPath).Ticks
-  [System.IO.File]::WriteAllText((Join-Path $env:TEMP 'dsh-cua-overlay.build'), [string]$buildStamp, (New-Object System.Text.UTF8Encoding($false)))
-} catch {}
 # One daemon per desktop: concurrent calls used to start several copies that
 # fought over the same state file. A named mutex makes the second start exit.
 $script:overlayMutex = $null
@@ -55,6 +48,11 @@ try {
   $acquired = $false
   try { $acquired = $script:overlayMutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $acquired = $true }
   if (-not $acquired) { Note "another daemon already runs; pid=$PID exits"; exit 0 }
+  try { [System.IO.File]::WriteAllText($PidPath, [string]$PID, (New-Object System.Text.UTF8Encoding($false))) } catch {}
+  try {
+    $buildStamp = [System.IO.File]::GetLastWriteTimeUtc([string]$PSCommandPath).Ticks
+    [System.IO.File]::WriteAllText((Join-Path $env:TEMP 'dsh-cua-overlay.build'), [string]$buildStamp, (New-Object System.Text.UTF8Encoding($false)))
+  } catch {}
   Note "start pid=$PID"
 } catch {
   Note "mutex unavailable; pid=$PID continues"
