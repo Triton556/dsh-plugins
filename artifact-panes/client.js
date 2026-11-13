@@ -3278,7 +3278,7 @@ function createDividerController({ read, bridge, visual, motion, env, report = (
         cancelPendingCommit();
         // Live follow owns these values now; keep them pinned until the deferred
         // native commit has run, otherwise React rewrites the width in between.
-        try { if (t.visual && typeof t.visual.holdPin === 'function') t.visual.holdPin(frame); } catch (e) {}
+        try { if (t.visual && typeof t.visual.holdPin === 'function') t.visual.holdPin(); } catch (e) {}
         pendingCommit = scheduleDeferredCommit(frame, t.bridgeToken, target.preference, t.visual);
         emit('DEFERRED_COMMIT', { transaction: t.id, delayMs: deferredCommitMs });
         finish(t, 'SETTLED');
@@ -3574,12 +3574,10 @@ function createVisualPort(doc) {
         liveEl = null; liveWidth = -1;
         this.freezeText(false);
       },
-      holdPin(frame) { this.pinHeld = true; this.pinFrame = frame || this.pinFrame || null; },
+      holdPin() { this.pinHeld = true; },
       releaseLive() {
         this.pinHeld = false;
-        // the release path pins the frame directly even when no live element exists
-        const el = liveEl || this.pinFrame || null;
-        this.pinFrame = null;
+        const el = liveEl;
         liveEl = null; liveWidth = -1;
         try {
           if (el) {
