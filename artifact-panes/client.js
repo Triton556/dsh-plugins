@@ -3141,16 +3141,37 @@ function createDividerController({ read, bridge, visual, motion, env, report = (
   // commit when the page becomes visible again or the user touches the GUI.
   const releasePin = (frame, committed, visual) => {
     try {
-      if (visual && typeof visual.releaseLive === 'function') visual.releaseLive();
-      else {
-        frame.removeAttribute('data-dsh-divider-live');
-        frame.style.removeProperty('--dsh-divider-sidebar');
-        frame.style.removeProperty('--dsh-divider-panel');
-      }
+      // The visual port only owns a live element; the release path pins the frame
+      // itself, so clean it either way or the pin stays on and the absolutely
+      // positioned panel rides over the chat with a horizontal scrollbar.
+      if (visual && typeof visual.releaseLive === 'function') { try { visual.releaseLive(); } catch (e) {} }
+      frame.removeAttribute('data-dsh-divider-live');
+      frame.style.removeProperty('--dsh-divider-sidebar');
+      frame.style.removeProperty('--dsh-divider-panel');
+      frame.style.removeProperty('--dsh-divider-panel-fixed');
     } catch (e) {}
     emit('DEFERRED_COMMIT_DONE', { committed });
   };
-  const scheduleDeferredCommit = (frame, token, preference, visual) => {
+  // Release the pin only when the committed width is really in the DOM, so the
+  // panel never shows the stale width for a frame; the timeout is a safety net.
+  const releaseWhenApplied = (frame, committed, visual, expected) => {
+    const want = Number(expected);
+    let tries = 0;
+    const giveUp = () => releasePin(frame, committed, visual);
+    const check = () => {
+      tries += 1;
+      try {
+        const panel = frame.querySelector('[data-sidebar-right-panel="push"]');
+        const inline = panel && panel.style ? String(panel.style.width || '') : '';
+        const px = parseFloat(inline);
+        if (!Number.isFinite(want) || (Number.isFinite(px) && Math.abs(px - want) <= 2)) { giveUp(); return; }
+      } catch (e) { giveUp(); return; }
+      if (tries >= 24) { giveUp(); return; }
+      env.setTimeout(check, 50);
+    };
+    env.setTimeout(check, 120);
+  };
+  const scheduleDeferredCommit = (frame, token, preference, visual, expected) => {
     const doc = frame.ownerDocument, win = doc.defaultView || env.win;
     let settled = false;
     const handle = { frame, timer: null, cancel: null };
@@ -3162,8 +3183,9 @@ function createDividerController({ read, bridge, visual, motion, env, report = (
       let committed = false;
       try { if (bridge.valid(token)) { bridge.commit(preference, token); committed = true; } } catch (e) {}
       emit('DEFERRED_COMMIT_RUN', { reason, committed });
-      // Let React finish its re-render under the pin, then release it.
-      env.setTimeout(() => releasePin(frame, committed, visual), 300);
+      // Let React finish its re-render under the pin, then release it as soon
+      // as the committed width is visible in the DOM.
+      releaseWhenApplied(frame, committed, visual, expected);
     };
     const onVisible = () => { if (doc.visibilityState === 'visible') run('visible'); };
     const onInteract = () => run('interact');
@@ -3285,7 +3307,7 @@ function createDividerController({ read, bridge, visual, motion, env, report = (
         // Live follow owns these values now; keep them pinned until the deferred
         // native commit has run, otherwise React rewrites the width in between.
         try { if (t.visual && typeof t.visual.holdPin === 'function') t.visual.holdPin(); } catch (e) {}
-        pendingCommit = scheduleDeferredCommit(frame, t.bridgeToken, target.preference, t.visual);
+        pendingCommit = scheduleDeferredCommit(frame, t.bridgeToken, target.preference, t.visual, target.panelWidth);
         emit('DEFERRED_COMMIT', { transaction: t.id, delayMs: deferredCommitMs });
         finish(t, 'SETTLED');
         return;
