@@ -241,7 +241,7 @@ function Invoke-WindowOp([System.IntPtr]$h) {
     'move' { [void][Cua.Native]::SetWindowPos($h, [System.IntPtr]::Zero, $X, $Y, 0, 0, 0x0001) }
     'park' {
       # Move the window far off any monitor: it keeps rendering and stays
-      # scriptable (PrintWindow/CDP), but never covers the user's work.
+      # scriptable (PrintWindow), but never covers the user's work.
       $r = New-Object Cua.Native+RECT
       [void][Cua.Native]::GetWindowRect($h, [ref]$r)
       $script:parkedX = $r.Left; $script:parkedY = $r.Top

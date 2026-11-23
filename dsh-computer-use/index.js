@@ -164,134 +164,6 @@ function stripOverlay(text) {
 // Some callers deliver UTF-8 text that was already decoded as CP1251, which turns
 // any non-ASCII window title into mojibake. A strict UTF-8 decode of the reversed
 // bytes only succeeds for real text, so it is a safe repair.
-// ------------------------------------------------------------------ tab badge
-// While computer_cdp works with a tab, the tab's favicon is composited with the
-// DeepSeek whale cursor (original icon underneath) and the title gets a marker.
-// Composites are cached per favicon URL; the restore runs with a linger timer so
-// back-to-back calls do not blink.
-const FAVICON_SPRITE = fileURLToPath(new URL('./tools/cursor-neon-crisp.png', import.meta.url));
-const FAVICON_COMPOSITE = fileURLToPath(new URL('./tools/favicon-composite.py', import.meta.url));
-const BADGE_LINGER_MS = 8000;
-const badgeDataUrls = new Map();   // favicon url -> composited data url
-const badgeTimers = new Map();     // `${port}|${ref}` -> restore timer
-const badgeTargets = new Map();    // `${port}|${ref}` -> resolved target id
-
-function badgeRestoreJs() {
-  // Same selector as badge-on: an escaped `link[rel*=\"icon\"]` searched for a
-  // literal quote and never matched, so the favicon was never restored.
-  return `(function(){
-    (window.__dshSaved || []).forEach((saved) => {
-      try {
-        if (saved.el) {
-          saved.el.href = saved.href;
-          if (typeof saved.type === 'string') saved.el.type = saved.type;
-        }
-      } catch (e) {}
-    });
-    window.__dshSaved = [];
-    if (window.__dshTitleSaved) {
-      document.title = window.__dshTitle;
-      window.__dshTitleSaved = false;
-    }
-    return 'off';
-  })()`;
-}
-
-function badgePythonPath() {
-  const localPrograms = process.env['LOCALAPPDATA'] || join(process.env['USERPROFILE'] || '', 'AppData', 'Local');
-  const candidates = [
-    process.env.DSH_CUA_PYTHON,
-    join(localPrograms, 'Programs', 'DeepSeek Harness', 'resources', 'runtime', 'primary-runtime', 'dependencies', 'python', 'python.exe'),
-    join(process.env['ProgramFiles'] || 'C:\\Program Files', 'DeepSeek Harness', 'resources', 'runtime', 'primary-runtime', 'dependencies', 'python', 'python.exe'),
-    'python.exe'
-  ];
-  return candidates.find((p) => p && existsSync(p)) || null;
-}
-
-async function cdpBadgeOn(port, ref) {
-  const { cdp } = await import('./tools/engine.mjs');
-  const key = `${port}|${ref || ''}`;
-  const pending = badgeTimers.get(key);
-  if (pending) { clearTimeout(pending); badgeTimers.delete(key); }
-  const listRes = await cdp({ List: true, Port: port });
-  if (!listRes.ok) return undefined;
-  const targets = JSON.parse(listRes.text).filter((t) => t.type === 'page' || t.type === 'webview');
-  const picked = targets.find((p) => p.id === ref)
-    || targets.find((p) => String(p.url || '').includes(ref))
-    || targets.find((p) => String(p.title || '').includes(ref))
-    || (ref ? null : targets[0]);
-  if (!picked) return undefined;
-  const id = picked.id;
-  badgeTargets.set(key, id);
-
-  // The title marker is the universal part: it must apply even when the favicon
-  // cannot be composited (data:/blob icons, offline fetches, no Python).
-  const titleOn = `(function(){
-    if (!window.__dshTitleSaved) {
-      window.__dshTitleSaved = true;
-      window.__dshTitle = document.title;
-    }
-    document.title = '[DSH working] ' + String(window.__dshTitle || '').slice(0, 30);
-    return 'title on';
-  })()`;
-  await cdp({ Eval: titleOn, Target: id, Port: port });
-
-  try {
-    const hrefRes = await cdp({
-      Eval: "(function(){ const l=document.querySelector('link[rel*=\"icon\"]'); return l ? l.href : ''; })()",
-      Target: id, Port: port
-    });
-    const href = String(hrefRes.text || '').trim().split('\n')[0].trim();
-    if (!/^https?:/.test(href)) return id;
-
-    let dataUrl = badgeDataUrls.get(href);
-    if (!dataUrl) {
-      const response = await fetch(href);
-      if (!response.ok) return id;
-      const favPath = join(tmpdir(), `dsh-favicon-${Date.now()}`);
-      writeFileSync(favPath, Buffer.from(await response.arrayBuffer()));
-      const outPath = `${favPath}.b64`;
-      const python = badgePythonPath();
-      if (!python) return id;
-      execFileSync(python, [FAVICON_COMPOSITE, favPath, outPath], { timeout: 20000 });
-      dataUrl = `data:image/png;base64,${readFileSync(outPath, 'utf8').trim()}`;
-      badgeDataUrls.set(href, dataUrl);
-      try { unlinkSync(favPath); unlinkSync(`${favPath}.b64.png`); unlinkSync(outPath); } catch (error) {}
-    }
-
-    const swap = `(function(){
-      const d = ${JSON.stringify(dataUrl)};
-      window.__dshSaved = window.__dshSaved || [];
-      document.querySelectorAll('link[rel*="icon"]').forEach((l) => {
-        if (l.href === d) return;
-        const known = window.__dshSaved.find((x) => x.el === l);
-        if (!known) window.__dshSaved.push({ el: l, href: l.href, type: l.type });
-        l.type = 'image/png';
-        l.href = d;
-      });
-      if (!window.__dshSaved.length) {
-        const l = document.createElement('link');
-        l.rel = 'icon'; l.type = 'image/png'; l.href = d;
-        document.head.appendChild(l);
-      }
-      return 'favicon on';
-    })()`;
-    await cdp({ Eval: swap, Target: id, Port: port });
-  } catch (error) {
-    // The title marker is already applied; a failed composite must not undo it.
-  }
-  return id;
-}
-
-async function cdpBadgeOff(port, ref) {
-  const { cdp } = await import('./tools/engine.mjs');
-  const key = `${port}|${ref || ''}`;
-  const id = badgeTargets.get(key);
-  if (!id) return;
-  badgeTargets.delete(key);
-  try { await cdp({ Eval: badgeRestoreJs(), Target: id, Port: port }); } catch (error) {}
-}
-
 // Some callers deliver UTF-8 text that was already decoded as CP1251, which turns
 const CP1251_BYTES = (() => {
   try {
@@ -336,7 +208,7 @@ function captionFor(name, args = {}) {
       computer_focus: 'focus', computer_window: 'window', computer_launch: 'launch',
       computer_tabs: 'browser tabs', computer_tab: 'tab', computer_wait: 'wait',
       computer_record: 'record', computer_video: 'record', computer_ocr: 'read text',
-      computer_uitree: 'ui tree', computer_ui_action: 'ui action', computer_cdp: 'browser'
+      computer_uitree: 'ui tree', computer_ui_action: 'ui action'
     }[name] || name.replace(/^computer_/, '');
     return `${verb}: ${intent}`;
   }
@@ -360,7 +232,6 @@ function captionFor(name, args = {}) {
     case 'computer_ocr': return 'read text (ocr)';
     case 'computer_uitree': return `ui tree${where}`;
     case 'computer_ui_action': return `ui ${args.kind || 'act'} "${String(args.name || '').slice(0, 20)}"`;
-    case 'computer_cdp': return `browser ${args.action || ''}${args.target ? ` - ${String(args.target).slice(0, 24)}` : ''}`;
     default: return name.replace(/^computer_/, '');
   }
 }
@@ -405,7 +276,7 @@ const CUA_PROMPT = [
   'and offer to do it with computer use instead of silently refusing.',
   '',
   'Consent rules:',
-  '- Driving ONE app or ONE browser tab (pass window or pid / a CDP target) needs no special',
+  '- Driving ONE app or ONE browser tab (pass window or pid) needs no special',
   '  permission; just do it and report what you touched.',
   '- Driving the WHOLE SCREEN (click/type/scroll without window or pid) takes the mouse and',
   '  keyboard away from the user. Before the first such call, ask whether they are ready to',
@@ -633,27 +504,6 @@ export const TOOLS = [
     run: (a) => ({ action: 'uiact', window: a.window, processId: a.pid, text: a.name,
       value: a.kind === 'value' ? (a.value || '') : '' })
   },
-  {
-    name: 'computer_cdp',
-    description: 'Chrome DevTools Protocol for Chromium/Electron started with --remote-debugging-port: list targets, evaluate JS, dump DOM, screenshot a tab (no occlusion), drive input in the BACKGROUND (no focus, no cursor), sample frame timing or write a trace.',
-    parameters: {
-      port: { type: 'integer', description: 'Debug port, default 9222' },
-      action: { type: 'string', enum: ['list', 'eval', 'dom', 'shot', 'perf', 'trace', 'navigate', 'click', 'drag', 'type', 'key', 'scroll'], description: 'Operation; click/type/key/scroll run in the background' },
-      target: { type: 'string', description: 'Target id, url or title substring' },
-      expression: { type: 'string', description: 'JS for eval' },
-      path: { type: 'string', description: 'PNG path for shot, JSON path for trace' },
-      duration: { type: 'integer', description: 'Perf/trace sampling window ms' },
-      x: { type: 'integer', description: 'Click/scroll X inside the page' },
-      y: { type: 'integer', description: 'Click/scroll Y inside the page' },
-      x2: { type: 'integer', description: 'Drag end X' },
-      y2: { type: 'integer', description: 'Drag end Y' },
-      text: { type: 'string', description: 'Text for action=type' },
-      keys: { type: 'string', description: 'Combo for action=key, e.g. CTRL+V' },
-      delta: { type: 'integer', description: 'Wheel delta for action=scroll' },
-      url: { type: 'string', description: 'URL for action=navigate' }
-    },
-    run: (a) => ({ cdp: { port: a.port, action: a.action, target: a.target, expression: a.expression, path: a.path, duration: a.duration, x: a.x, y: a.y, x2: a.x2, y2: a.y2, text: a.text, keys: a.keys, delta: a.delta, url: a.url } })
-  }
 ];
 
 // ---------------------------------------------------------------------- wiring
@@ -722,7 +572,7 @@ export function apply(ctx, config = {}) {
               }
             },
             execute: async (args) => {
-              const { engine, cdp } = await import('./tools/engine.mjs');
+              const { engine } = await import('./tools/engine.mjs');
 
               // Whole-screen input and a fresh ESC stop both require the user's consent.
               const screenWide = SCREEN_INPUT_TOOLS.has(spec.name) && !args.window && !args.pid;
@@ -759,46 +609,6 @@ export function apply(ctx, config = {}) {
               }
 
               const call = spec.run(args || {});
-              if (call && call.cdp) {
-                const c = call.cdp;
-                // Tab indicator: badge on the favicon of the tab we are working
-                // with. The restore timer is armed AFTER the action completes, so
-                // a long call (perf/trace) does not drop the badge mid-work.
-                let badgeId;
-                if (c.action !== 'list') {
-                  badgeId = await cdpBadgeOn(c.port || 9222, c.target).catch((e) => { console.warn('[dsh-computer-use] badge:', String(e && e.message || e).slice(0, 160)); return undefined; });
-                }
-                let result;
-                try {
-                  result = await cdp({
-                    port: c.port,
-                    ...(c.action === 'list' ? { List: true } : {}),
-                    ...(c.action === 'eval' ? { Eval: c.expression } : {}),
-                    ...(c.action === 'dom' ? { Dom: true } : {}),
-                    ...(c.action === 'shot' ? { Shot: c.path } : {}),
-                    ...(c.action === 'perf' ? { Perf: c.duration || 3000 } : {}),
-                    ...(c.action === 'trace' ? { Trace: c.path, Perf: c.duration || 3000 } : {}),
-                    ...(c.action === 'navigate' ? { Navigate: c.url } : {}),
-                    ...(c.action === 'click' ? { Click: `${c.x},${c.y}` } : {}),
-                    ...(c.action === 'drag' ? { Drag: `${c.x},${c.y},${c.x2},${c.y2}` } : {}),
-                    ...(c.action === 'type' ? { Type: c.text } : {}),
-                    ...(c.action === 'key' ? { Key: c.keys } : {}),
-                    ...(c.action === 'scroll' ? { Scroll: `${c.x},${c.y}`, Delta: c.delta || -300 } : {}),
-                    ...(badgeId ? { Target: badgeId } : c.target ? { Target: c.target } : {})
-                  });
-                } finally {
-                  if (c.action !== 'list') {
-                    const badgeKey = `${c.port || 9222}|${c.target || ''}`;
-                    const pending = badgeTimers.get(badgeKey);
-                    if (pending) clearTimeout(pending);
-                    badgeTimers.set(badgeKey, setTimeout(() => {
-                      badgeTimers.delete(badgeKey);
-                      cdpBadgeOff(c.port || 9222, c.target).catch(() => {});
-                    }, BADGE_LINGER_MS));
-                  }
-                }
-                return result;
-              }
               const engineArgs = {};
               for (const [key, value] of Object.entries(call)) {
                 if (key === 'action') { engineArgs.Action = value; continue; }

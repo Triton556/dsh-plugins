@@ -1,6 +1,6 @@
-// Engine bridge: every computer-use tool ultimately drives either the Windows
-// PowerShell engine (tools/cua.ps1) or the Chrome DevTools Protocol helper
-// (tools/cdp.mjs). Both are bundled in this package so the plugin is portable.
+// Engine bridge: every computer-use tool ultimately drives the Windows
+// PowerShell engine (tools/cua.ps1). It is bundled with the package so the
+// plugin stays portable.
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
@@ -9,7 +9,6 @@ import { join } from 'node:path';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const ENGINE = fileURLToPath(new URL('./cua.ps1', import.meta.url));
-const CDP = fileURLToPath(new URL('./cdp.mjs', import.meta.url));
 
 function run(command, args, { timeoutMs = 30000 } = {}) {
   return new Promise((resolve) => {
@@ -72,16 +71,4 @@ export async function engine(options) {
   }
 }
 
-export function cdp(options) {
-  // cdp.mjs reads -Port/-Target style switches; callers may pass lowercase
-  // field names from the tool schema, so normalise the two that differ.
-  const normalized = {};
-  for (const [key, value] of Object.entries(options || {})) {
-    if (key === 'port') normalized.Port = value;
-    else if (key === 'target') normalized.Target = value;
-    else normalized[key] = value;
-  }
-  return run(process.execPath, [CDP, ...argv(normalized)], { timeoutMs: 60000 });
-}
-
-export const paths = { HERE, ENGINE, CDP };
+export const paths = { HERE, ENGINE };

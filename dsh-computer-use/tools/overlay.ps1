@@ -244,11 +244,9 @@ $timer.Add_Tick({
       # in-flight engine invocations, then leave a one-shot marker that tells the
       # agent why its call died. No timed lockout of anything.
       try {
-        # Engine calls run as powershell -File cua.ps1; CDP actions run as node cdp.mjs.
+        # Engine calls run as powershell -File cua.ps1.
         $engines = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
           Where-Object { $_.CommandLine -match '-File\s+\S*cua\.ps1' })
-        $engines += @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
-          Where-Object { $_.CommandLine -match 'cdp\.mjs' })
         foreach ($proc in $engines) {
           try { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
         }

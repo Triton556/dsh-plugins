@@ -1,6 +1,6 @@
 ---
 name: computer-use
-description: Drive the desktop from an agent session - list windows, take occlusion-proof screenshots of a specific app, click/drag/type, switch Chrome tabs, read the clipboard, OCR, record frames, and use the Chrome DevTools Protocol. Use when a task needs a real GUI, a screenshot of another app, or profiling of a Chromium/Electron window.
+description: Drive the desktop from an agent session - list windows, take occlusion-proof screenshots of a specific app, click/drag/type, switch Chrome tabs, read the clipboard, OCR, invoke native controls through UI Automation, and record frames. Use when a task needs a real GUI or a screenshot of another app.
 ---
 
 # Computer use
@@ -44,56 +44,9 @@ then `computer_clipboard` and read the text.
 **OCR** (canvas, video, games): `computer_ocr { path: "<png>" }` - Windows OCR,
 no network.
 
-## Chrome DevTools Protocol
+## Native windows without stealing focus
 
-Needs a Chromium/Electron started with `--remote-debugging-port=<port>`:
-
-- `computer_launch { path: "C:/.../chrome.exe", args: "--remote-debugging-port=9222 --user-data-dir=C:/tmp/cdp-profile" }`
-- `computer_cdp { action: "list" }` - targets
-- `computer_cdp { action: "eval", expression: "document.title" }`
-- `computer_cdp { action: "dom" }` - `document.body.outerHTML`
-- `computer_cdp { action: "shot", path: "C:/tmp/tab.png" }` - tab pixels, never occluded
-- `computer_cdp { action: "perf", duration: 3000 }` - frame timing p50/p95/max
-
-CDP is the only way to profile our own GUI in a trustworthy way: window
-screenshots are subject to Chromium throttling of occluded windows.
-
-## Limits
-
-- UI Automation trees of Electron apps are empty unless the app enables
-  accessibility (`--force-renderer-accessibility`).
-- `computer_focus` is best-effort: Windows foreground lock may refuse.
-- Mouse/keyboard go to the real desktop - do not fight the human for the cursor.
-## Working BEHIND other windows (no focus, no cursor)
-
-Two paths, pick by app type.
-
-**Chromium / Electron apps** (Chrome, our DSH, Claude Desktop): start them with a
-debug port and drive them entirely in the background - no window raise, no
-cursor movement, no focus steal:
-
-```
-computer_launch { path: "C:/.../chrome.exe",
-                  args: "--remote-debugging-port=9333 --user-data-dir=C:/tmp/cdp" }
-computer_cdp { port: 9333, action: "list" }
-computer_cdp { port: 9333, action: "navigate", url: "https://example.com" }
-computer_cdp { port: 9333, action: "eval", expression: "document.title" }
-computer_cdp { port: 9333, action: "click", x: 98, y: 165 }      // real click in the page
-computer_cdp { port: 9333, action: "eval", expression: "document.getElementById('i').focus()" }
-computer_cdp { port: 9333, action: "type", text: "hello" }
-computer_cdp { port: 9333, action: "key", keys: "ENTER" }
-computer_cdp { port: 9333, action: "scroll", x: 400, y: 400, delta: -600 }
-computer_cdp { port: 9333, action: "shot", path: "C:/tmp/tab.png" }
-computer_cdp { port: 9333, action: "trace", path: "C:/tmp/trace.json", duration: 3000 }
-```
-
-Verified: clicks and typing land in the page while another app owns the
-foreground, and the mouse pointer does not move. Type after focusing the field
-(click it or `eval` a `.focus()`), because `Input.insertText` goes to the
-focused element.
-
-**Native apps** (Win32/WPF/UWP): use UI Automation patterns, which act on a
-control without activating the window:
+Use UI Automation patterns, which act on a control without activating the window:
 
 ```
 computer_uitree { window: "Notepad" }            // find the control name
@@ -102,19 +55,21 @@ computer_ui_action { window: "Form", name: "Email", kind: "value", value: "a@b.c
 ```
 
 Patterns tried in order: invoke -> toggle -> select -> expand -> value. Real mouse
-input (`computer_click`) is the fallback and DOES need the window in front.
+input (`computer_click`) is the fallback and DOES need the window in front, which
+takes the pointer and the screen away from the user.
+
 ## Launch without covering the user
 
 `computer_launch` takes `park: true`: Chromium gets `--window-position=-6000,-6000`
 so its window is born off every monitor, and other apps are moved off-screen as
-soon as the window appears. Verified: the window reports `-6000,-6000` and the
-debug port still answers, so a parked browser remains fully scriptable.
+soon as the window appears. A parked window still renders for `computer_shot`
+(`method: "print"`), so it stays usable without ever appearing on screen.
 
-```
-computer_launch { path: "C:/.../chrome.exe", park: true,
-                  args: "--remote-debugging-port=9471 --user-data-dir=C:/tmp/cdp-1 --window-size=1200,900 about:blank" }
-computer_cdp { port: 9471, action: "list" }        // works while parked
-```
+## Limits
 
-End-to-end scenario (launch -> navigate -> background click -> type -> screenshot ->
-trace -> park) is reproducible with `node tools/scenario.mjs`.
+- UI Automation trees of Electron apps are empty unless the app enables
+  accessibility (`--force-renderer-accessibility`).
+- Chromium throttles rendering for occluded and hidden windows: such a window can
+  stop painting and stop exposing an accessibility tree until it is visible.
+- `computer_focus` is best-effort: Windows foreground lock may refuse.
+- Mouse/keyboard go to the real desktop - do not fight the human for the cursor.
