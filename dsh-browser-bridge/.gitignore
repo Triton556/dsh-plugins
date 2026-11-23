@@ -1,0 +1,7 @@
+# Build output and machine-local state of the browser bridge.
+# The extension manifest and extension-id.txt ARE committed: they pin the id.
+host/NativeHost.exe
+host/com.dsh.browser.json
+node_modules/
+*.user
+*.log

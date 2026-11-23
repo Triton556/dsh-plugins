@@ -1,0 +1,4 @@
+﻿# dsh-browser-bridge: agent tools over the local browser bridge.
+- insert:
+    - id: browser-bridge-tools
+      name: dsh-browser-bridge

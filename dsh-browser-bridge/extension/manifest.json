@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "DSH Browser Bridge",
+  "version": "0.1.0",
+  "description": "Local native-messaging bridge: lets DeepSeek Harness drive an already running browser through accessibility actions, without a debug port.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA6d6BpPiWZ3/EJKu/kbyZ2hd5gOjzkifX50zfPSkvkJ5QeUNO66dwlorO3RfalYfmQrSe3AASp/PpcIUkZz9LpgNtqkdspAlQbrVPcH82Uc3kwX273dXPae9nuWllWR183yulQos/GyR93kqxEUKzR22UAaEV7RdMckFPzxE1CTJaWyaPvv9fDMFVgn5Ch812lmLJnGkjAoozZb+KQk/W+GFcLn/S+IHUDmbqR8qmYFmrhKtgUl0ubqSyF8F75h6OQgQwY3vhIPpOs3KtE2RkxnqJnQTwmCmuPoZFN6HsQN/Ga6K3Cn3DS+6wu39uZCLbOZlzu5myLYfiBrx9LMgAdQIDAQAB",
+  "permissions": [
+    "nativeMessaging",
+    "debugger",
+    "tabs",
+    "scripting",
+    "alarms",
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "minimum_chrome_version": "116"
+}
