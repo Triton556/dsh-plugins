@@ -244,6 +244,21 @@ for (const rule of ['.dap-trigger:hover', '.dap-trigger[aria-expanded="true"]', 
   assert.ok(source.includes(rule), 'stylesheet defines ' + rule);
 }
 
+// First-open menu: with nothing selected the pane lands on a menu that lists
+// what exists instead of silently opening an arbitrary file.
+const landing = renderBrowser({ 0: ITEMS, 1: null });
+const landingRows = findNodes(landing, (node) => node.props && node.props.className === 'dap-item');
+assert.equal(landingRows.length, ITEMS.length, 'landing lists every artifact');
+assert.doesNotThrow(() => landingRows[0].props.onClick(), 'landing row click must not throw');
+assert.equal(setters[1] && setters[1].path, ITEMS[0].path, 'landing row selects the artifact');
+const headings = findNodes(landing, (node) => Array.isArray(node.children) && node.children.includes('Артефакты'));
+assert.ok(headings.length >= 1, 'landing carries the heading');
+
+const emptyLanding = renderBrowser({ 0: [], 1: null });
+const emptyText = findNodes(emptyLanding, (node) => Array.isArray(node.children)
+  && node.children.some((child) => typeof child === 'string' && child.includes('Пока нет артефактов')));
+assert.ok(emptyText.length >= 1, 'empty landing explains the state instead of a blank pane');
+
 // Re-render cost: unchanged inputs must hand back the cached elements, so a
 // sidebar resize re-render does not rebuild the list or the iframe.
 const memo = { entries: [], index: 0, hits: 0 };

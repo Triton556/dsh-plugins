@@ -44,6 +44,7 @@ const fs = {
 };
 
 const routes = new Map();
+const sessionsList = [{ id: 'sess-1', header: { cwd: root, createdAt: 1 } }];
 const ctx = {
   effect(fn) { return fn(); },
   // the host plugin also injects the tools service for the artifact tools
@@ -51,7 +52,7 @@ const ctx = {
   get(name) {
     if (name === 'webServer') return { register(def) { routes.set(def.path, def); return () => routes.delete(def.path); } };
     if (name === 'fs') return fs;
-    if (name === 'sessions') return { list: () => [{ header: { cwd: root, createdAt: 1 } }] };
+    if (name === 'sessions') return { list: () => sessionsList };
     if (name === 'sandboxPolicy') return { workspaceRoot: root };
     return undefined;
   },
@@ -173,6 +174,50 @@ function response() {
   assert.equal(bad.out.code, 400);
   const files = await readdir(path.join(root, '.dsh', 'artifact-panes', 'answers'));
   assert.equal(files.length, 1, 'rejected payloads leave no file');
+}
+
+// A second workspace: the picker must list it, switch the listing to it by
+// session id, and add recent HTML outside artifacts/ only when asked.
+{
+  const ws2 = await mkdtemp(path.join(tmpdir(), 'artifact-panes-ws2-'));
+  await mkdir(path.join(ws2, 'artifacts'), { recursive: true });
+  await writeFile(path.join(ws2, 'artifacts', 'second.html'),
+    '<html><head><title>Second workspace</title></head><body></body></html>', 'utf8');
+  await writeFile(path.join(ws2, 'recent-outside.html'),
+    '<html><head><title>Outside recent</title></head><body></body></html>', 'utf8');
+  sessionsList.push({ id: 'sess-2', header: { cwd: ws2, createdAt: 2 } });
+
+  const ws = response();
+  await routes.get('/artifact-panes/workspaces').handler({ method: 'GET' }, ws.res);
+  const list = JSON.parse(ws.out.body);
+  assert.equal(list.ok, true);
+  assert.equal(list.workspaces.length, 2, 'both workspaces are offered');
+  const second = list.workspaces.find((item) => item.sessionId === 'sess-2');
+  assert.ok(second, 'the second session is present');
+  assert.ok(second.label.length > 0, 'the label is derived from the folder');
+  assert.equal(second.hasArtifacts, true);
+
+  const bySession = response();
+  await routes.get('/artifact-panes/library').handler({ method: 'GET', url: '/artifact-panes/library?sessionId=sess-2' }, bySession.res);
+  const scoped = JSON.parse(bySession.out.body);
+  assert.equal(scoped.ok, true);
+  assert.ok(scoped.root.endsWith('artifacts'), 'root points at the artifacts folder');
+  assert.ok(scoped.root.includes(path.basename(ws2)), 'root follows the requested session');
+  assert.ok(scoped.artifacts.some((item) => item.title === 'Second workspace'));
+
+  const plain = response();
+  await routes.get('/artifact-panes/library').handler({ method: 'GET', url: '/artifact-panes/library?sessionId=sess-2' }, plain.res);
+  assert.equal(JSON.parse(plain.out.body).artifacts.some((item) => item.outside), false, 'outside files stay out by default');
+
+  const withOutside = response();
+  await routes.get('/artifact-panes/library').handler({ method: 'GET', url: '/artifact-panes/library?sessionId=sess-2&outside=1' }, withOutside.res);
+  const expanded = JSON.parse(withOutside.out.body);
+  assert.equal(expanded.outside, true);
+  const outsideItem = expanded.artifacts.find((item) => item.outside);
+  assert.ok(outsideItem, 'the recent HTML outside artifacts/ is listed');
+  assert.ok(outsideItem.path.endsWith('recent-outside.html'));
+
+  await rm(ws2, { recursive: true, force: true });
 }
 
 await rm(root, { recursive: true, force: true });

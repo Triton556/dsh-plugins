@@ -56,22 +56,30 @@ export function apply(ctx) {
   // The library root is the workspace the user actually works in: the cwd of
   // the most recently created live session. sandboxPolicy.workspaceRoot is
   // only the last fallback вЂ” it is not always the visible workspace.
-  async function resolveLibraryRoot(ctx, fs) {
+  async function resolveLibraryRoot(ctx, fs, preferredSessionId) {
     try {
       const sessions = ctx.get('sessions')
       const live = sessions && typeof sessions.list === 'function' ? sessions.list() : undefined
       const candidates = []
+      let preferred
       for (const session of live || []) {
         const cwd = session && session.header && typeof session.header.cwd === 'string' && session.header.cwd
         const at = session && session.header && typeof session.header.createdAt === 'number' ? session.header.createdAt : 0
         if (cwd) candidates.push({ cwd, at })
+        if (preferredSessionId && session && session.id === preferredSessionId && cwd) preferred = cwd
       }
-      candidates.sort((a, b) => b.at - a.at)
-      for (const { cwd } of candidates) {
+      const usable = async (cwd) => {
         try {
           const info = await fs.stat(await fs.resolve(cwd))
-          if (info && info.type === 'directory') return cwd
-        } catch (e) { /* stale candidate вЂ” try the next one */ }
+          return !!(info && info.type === 'directory')
+        } catch (e) { return false }
+      }
+      // An explicitly requested session wins: the picker must list exactly the
+      // workspace the user chose, not the newest one.
+      if (preferred && await usable(preferred)) return preferred
+      candidates.sort((a, b) => b.at - a.at)
+      for (const { cwd } of candidates) {
+        if (await usable(cwd)) return cwd
       }
     } catch (e) {}
     try {
@@ -80,6 +88,82 @@ export function apply(ctx) {
     } catch (e) {}
     return undefined
   }
+
+  // Workspaces the picker can switch to: the distinct cwds of live sessions.
+  // A workspace without a live session cannot be read (the client reads bytes
+  // through a session id), so it is not offered at all.
+  ctx.effect(() => webServer.register({
+    kind: 'exact',
+    path: '/artifact-panes/workspaces',
+    handler: async (req, res) => {
+      const send = (payload) => {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+        res.end(JSON.stringify(payload))
+      }
+      const fs = ctx.get('fs')
+      const sessions = ctx.get('sessions')
+      const list = sessions && typeof sessions.list === 'function' ? sessions.list() : []
+      const seen = new Map()
+      for (const session of list || []) {
+        const cwd = session && session.header && typeof session.header.cwd === 'string' ? session.header.cwd : ''
+        if (!cwd) continue
+        const key = cwd.replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase()
+        if (seen.has(key)) continue
+        let hasArtifacts = false
+        try {
+          if (fs && typeof fs.stat === 'function') {
+            const info = await fs.stat(await fs.resolve(cwd + '/artifacts'))
+            hasArtifacts = !!(info && info.type === 'directory')
+          }
+        } catch (e) { /* no artifacts folder */ }
+        seen.set(key, {
+          sessionId: session.id,
+          cwd,
+          label: cwd.replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean).pop() || cwd,
+          hasArtifacts,
+        })
+      }
+      const workspaces = [...seen.values()].sort((a, b) => a.label.localeCompare(b.label))
+      send({ ok: true, workspaces })
+    },
+  }), 'artifact-panes: workspaces route')
+
+  // Agent-facing UI channel: the client polls `.dsh/artifact-panes/ui-command.json`
+  // and posts the outcome here. This lets an agent inspect and click the panel
+  // through the real DOM instead of guessing from screenshots.
+  ctx.effect(() => webServer.register({
+    kind: 'exact',
+    path: '/artifact-panes/ui-result',
+    handler: async (req, res) => {
+      const send = (code, payload) => {
+        res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+        res.end(JSON.stringify(payload))
+      }
+      if (req.method !== 'POST') { send(405, { ok: false, error: 'POST only' }); return }
+      const chunks = []
+      for await (const chunk of req) {
+        chunks.push(chunk)
+        if (Buffer.concat(chunks).length > 1_000_000) { send(413, { ok: false, error: 'payload too large' }); return }
+      }
+      let body
+      try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch (e) { send(400, { ok: false, error: 'invalid json' }); return }
+      const id = body && typeof body.id === 'string' ? body.id : ''
+      if (!/^[a-z0-9-]{4,60}$/i.test(id)) { send(400, { ok: false, error: 'invalid id' }); return }
+      const fs = ctx.get('fs')
+      const root = await resolveLibraryRoot(ctx, fs, typeof body.sessionId === 'string' ? body.sessionId : '')
+      if (!root) { send(500, { ok: false, error: 'workspace not resolved' }); return }
+      // Plain node:fs on purpose: the sandboxed fs service refuses writes to
+      // dot-directories, exactly like the survey answers route avoids it.
+      const dir = abs(root, '.dsh/artifact-panes')
+      try {
+        await mkdir(dir, { recursive: true })
+        await writeFile(dir + '/ui-result.json', JSON.stringify(body), 'utf8')
+        send(200, { ok: true })
+      } catch (e) {
+        send(500, { ok: false, error: e && e.message ? String(e.message) : 'write failed' })
+      }
+    },
+  }), 'artifact-panes: ui result route')
 
   ctx.effect(() => webServer.register({
     kind: 'exact',
@@ -91,7 +175,12 @@ export function apply(ctx) {
       }
       const fs = ctx.get('fs')
       if (!fs || typeof fs.listDir !== 'function') { send({ ok: false, artifacts: [], error: 'filesystem unavailable' }); return }
-      const root = await resolveLibraryRoot(ctx, fs)
+      const query = (() => {
+        try { return new URL(String(req.url || '/'), 'http://127.0.0.1').searchParams } catch (e) { return new URLSearchParams() }
+      })()
+      const sessionId = query.get('sessionId') || ''
+      const includeOutside = query.get('outside') === '1'
+      const root = await resolveLibraryRoot(ctx, fs, sessionId)
       if (!root) { send({ ok: false, artifacts: [], error: 'workspace not resolved' }); return }
       const wanted = /\.(?:html?|xhtml|md|markdown|svg|pdf)$/i
       const artifacts = []
@@ -149,8 +238,58 @@ export function apply(ctx) {
       }
       try {
         await walk(abs(root, 'artifacts'), 0)
+        if (includeOutside) {
+          // Recent HTML outside artifacts/: the user opted in for this. Strictly
+          // bounded - 30 days, 50 files, depth 3, no build/agent folders.
+          const cutoff = Date.now() - 30 * 24 * 3600 * 1000
+          const skipDirs = new Set(['node_modules', '.git', '.dsh', 'dist', 'build', '.next', 'out', 'coverage'])
+          const seen = new Set(artifacts.map((item) => item.path))
+          const extra = []
+          const titleOf = async (entry, filePath) => {
+            try {
+              const text = await fs.readText(entry.target)
+              const m = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(String(text || '').slice(0, 200000))
+              return m ? m[1].replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim().slice(0, 120) : ''
+            } catch (e) { return '' }
+          }
+          const walkOutside = async (dirPath, depth) => {
+            if (depth > 3 || extra.length >= 50) return
+            let target
+            try { target = await fs.resolve(dirPath) } catch (e) { return }
+            let entries
+            try { entries = await fs.listDir(target) } catch (e) { return }
+            for (const entry of entries) {
+              if (extra.length >= 50) return
+              if (!entry || !entry.name) continue
+              if (entry.type === 'directory') {
+                if (entry.name.startsWith('.') || skipDirs.has(entry.name) || entry.name === 'artifacts') continue
+                await walkOutside(dirPath + '/' + entry.name, depth + 1)
+                continue
+              }
+              if (!/\.(?:html?|xhtml)$/i.test(entry.name)) continue
+              const mtime = versionMtime(entry.version)
+              if (mtime && mtime < cutoff) continue
+              const filePath = dirPath + '/' + entry.name
+              const outPath = typeof fs.processPath === 'function' ? fs.processPath(entry.target) : filePath
+              if (seen.has(outPath)) continue
+              seen.add(outPath)
+              extra.push({ path: outPath, title: await titleOf(entry, filePath), size: entry.size || 0, mtime, outside: true })
+            }
+          }
+          await walkOutside(root, 0)
+          artifacts.push(...extra)
+        }
         artifacts.sort((a, b) => (b.mtime || 0) - (a.mtime || 0) || a.path.localeCompare(b.path))
-        send({ ok: true, root: root + '/artifacts', artifacts, errors })
+        // Workspace-relative address for every entry: opening a tab by an
+        // absolute path produced absolute headers and broke tab de-duplication.
+        const wsBase = String(root).replace(/\\/g, '/').replace(/\/+$/, '')
+        for (const item of artifacts) {
+          const normalized = String(item.path).replace(/\\/g, '/')
+          item.rel = normalized.toLowerCase().startsWith(wsBase.toLowerCase() + '/')
+            ? normalized.slice(wsBase.length + 1)
+            : normalized
+        }
+        send({ ok: true, root: root + '/artifacts', outside: includeOutside, artifacts, errors })
       } catch (e) {
         send({ ok: false, artifacts: [], root, error: e && e.message ? String(e.message) : 'library scan failed', errors })
       }
