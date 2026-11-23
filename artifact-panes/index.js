@@ -104,25 +104,57 @@ export function apply(ctx) {
       const sessions = ctx.get('sessions')
       const list = sessions && typeof sessions.list === 'function' ? sessions.list() : []
       const seen = new Map()
+      const norm = (cwd) => String(cwd || '').replace(/[\\/]+$/, '').replace(/\\/g, '/')
+      const labelOf = (cwd) => norm(cwd).split('/').filter(Boolean).pop() || norm(cwd)
+      const keyOf = (cwd) => norm(cwd).toLowerCase()
+      const hasArtifactsDir = async (cwd) => {
+        try {
+          if (!fs || typeof fs.stat !== 'function') return false
+          const info = await fs.stat(await fs.resolve(norm(cwd) + '/artifacts'))
+          return !!(info && info.type === 'directory')
+        } catch (e) { return false }
+      }
+      // Live sessions first: they can be read through workspaceFiles.
       for (const session of list || []) {
         const cwd = session && session.header && typeof session.header.cwd === 'string' ? session.header.cwd : ''
         if (!cwd) continue
-        const key = cwd.replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase()
+        const key = keyOf(cwd)
         if (seen.has(key)) continue
-        let hasArtifacts = false
-        try {
-          if (fs && typeof fs.stat === 'function') {
-            const info = await fs.stat(await fs.resolve(cwd + '/artifacts'))
-            hasArtifacts = !!(info && info.type === 'directory')
-          }
-        } catch (e) { /* no artifacts folder */ }
         seen.set(key, {
           sessionId: session.id,
           cwd,
-          label: cwd.replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean).pop() || cwd,
-          hasArtifacts,
+          label: labelOf(cwd),
+          hasArtifacts: await hasArtifactsDir(cwd),
+          live: true,
         })
       }
+      // Closed sessions: the persisted index keeps every session with its cwd,
+      // so their workspaces are offered before the user reopens them.
+      try {
+        const { readdir, readFile } = await import('node:fs/promises')
+        const home = process.env.DSH_HOME || 'F:/DeepSeek-Harness/data'
+        const dir = home.replace(/[\\/]+$/, '') + '/storages/session_projcache/sessions'
+        for (const name of await readdir(dir)) {
+          if (!name.endsWith('.json')) continue
+          let record
+          try {
+            record = JSON.parse(await readFile(dir + '/' + name, 'utf8'))
+          } catch (e) { continue }
+          const cwd = record && record.record && record.record.identity && record.record.identity.cwd
+          if (typeof cwd !== 'string' || !cwd) continue
+          const key = keyOf(cwd)
+          if (seen.has(key)) continue
+          if (!await hasArtifactsDir(cwd)) continue
+          seen.set(key, {
+            sessionId: null,
+            indexId: name.replace(/\.json$/, ''),
+            cwd,
+            label: labelOf(cwd),
+            hasArtifacts: true,
+            live: false,
+          })
+        }
+      } catch (e) { /* no index available: live sessions only */ }
       const workspaces = [...seen.values()].sort((a, b) => a.label.localeCompare(b.label))
       send({ ok: true, workspaces })
     },

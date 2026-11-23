@@ -6,6 +6,8 @@ import { mkdtemp, mkdir, rm, writeFile, readFile, readdir } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+// Isolate from the real session index: only the live sessions below exist here.
+process.env.DSH_HOME = path.join(tmpdir(), 'artifact-panes-no-dsh-home');
 const { apply } = await import('../index.js');
 assert.equal(typeof apply, 'function');
 
