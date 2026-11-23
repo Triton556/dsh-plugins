@@ -2,7 +2,7 @@
 // fake Cordis ctx plus a fake webServer, then drives both routes (list the
 // library, store a questionnaire answer) against a throwaway workspace.
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile, readFile, readdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, readFile, readdir, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -10,6 +10,11 @@ import path from 'node:path';
 process.env.DSH_HOME = path.join(tmpdir(), 'artifact-panes-no-dsh-home');
 const { apply } = await import('../index.js');
 assert.equal(typeof apply, 'function');
+
+// A previous failed run can leave a fixture session index behind; every run
+// starts from an empty one, or the closed-workspace fixtures would leak into the
+// live-only assertions above them.
+await rm(process.env.DSH_HOME, { recursive: true, force: true });
 
 const root = await mkdtemp(path.join(tmpdir(), 'artifact-panes-test-'));
 await mkdir(path.join(root, 'artifacts'), { recursive: true });
@@ -220,6 +225,146 @@ function response() {
   assert.ok(outsideItem.path.endsWith('recent-outside.html'));
 
   await rm(ws2, { recursive: true, force: true });
+}
+
+// A closed workspace: readable by path (`root`), never by session. The fake
+// session index below is the only thing that makes it known, exactly like a
+// session that was closed before this process started.
+{
+  const closedRoot = await mkdtemp(path.join(tmpdir(), 'artifact-panes-closed-'));
+  const closedId = 'session-closed-fixture-0001';
+  const indexDir = path.join(process.env.DSH_HOME, 'storages', 'session_projcache', 'sessions');
+  await mkdir(indexDir, { recursive: true });
+  await writeFile(path.join(indexDir, closedId + '.json'),
+    JSON.stringify({ record: { identity: { cwd: closedRoot } } }), 'utf8');
+
+  await mkdir(path.join(closedRoot, 'artifacts'), { recursive: true });
+  await writeFile(path.join(closedRoot, 'artifacts', 'closed-demo.html'),
+    '<!doctype html><html><head><title>Закрытый · артефакт</title></head><body>closed</body></html>', 'utf8');
+  await writeFile(path.join(closedRoot, 'artifacts', 'notes.txt'), 'plain text is not an artifact', 'utf8');
+  await writeFile(path.join(closedRoot, 'artifacts', 'pic.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  await writeFile(path.join(closedRoot, 'recent-outside.html'),
+    '<html><head><title>Closed · outside</title></head><body></body></html>', 'utf8');
+  // Just over the 5 MB read cap: the host must refuse before encoding it.
+  await writeFile(path.join(closedRoot, 'artifacts', 'big.html'), Buffer.alloc(5 * 1024 * 1024 + 1, 0x61));
+
+  const askLibrary = async (query) => {
+    const { out, res } = response();
+    await routes.get('/artifact-panes/library').handler({ method: 'GET', url: '/artifact-panes/library' + query }, res);
+    return { code: out.code, payload: safeParse(out.body) };
+  };
+  const askFile = async (query) => {
+    const { out, res } = response();
+    await routes.get('/artifact-panes/file').handler({ method: 'GET', url: '/artifact-panes/file' + query }, res);
+    return { code: out.code, payload: safeParse(out.body) };
+  };
+  const enc = (value) => encodeURIComponent(value);
+
+  // The closed workspace is offered by the picker, without a session id.
+  const ws = response();
+  await routes.get('/artifact-panes/workspaces').handler({ method: 'GET' }, ws.res);
+  const offered = JSON.parse(ws.out.body).workspaces.find((item) => item.cwd === closedRoot);
+  assert.ok(offered, 'the closed workspace is offered');
+  assert.equal(offered.live, false);
+  assert.equal(offered.sessionId, null);
+  assert.equal(offered.indexId, closedId);
+
+  // /library?root= lists it through plain node:fs.
+  const listed = await askLibrary('?root=' + enc(closedRoot));
+  assert.equal(listed.code, 200);
+  assert.equal(listed.payload.ok, true);
+  assert.equal(listed.payload.root, closedRoot.replace(/[\\/]+$/, '') + '/artifacts');
+  const titles = listed.payload.artifacts.map((item) => item.title);
+  assert.ok(titles.includes('Закрытый · артефакт'), 'the closed workspace title is read');
+  const rels = listed.payload.artifacts.map((item) => item.rel);
+  assert.ok(rels.includes('artifacts/closed-demo.html'), 'entries keep a workspace-relative address');
+  assert.equal(listed.payload.artifacts.some((item) => item.outside), false, 'outside stays out by default');
+
+  const withOutside = await askLibrary('?root=' + enc(closedRoot) + '&outside=1');
+  assert.equal(withOutside.payload.outside, true);
+  const outsideItem = withOutside.payload.artifacts.find((item) => item.outside);
+  assert.ok(outsideItem, 'the recent HTML outside artifacts/ is listed for a closed workspace too');
+  assert.ok(outsideItem.rel.endsWith('recent-outside.html'));
+
+  // A root that is neither live nor in the index is refused by both routes.
+  const foreign = await mkdtemp(path.join(tmpdir(), 'artifact-panes-foreign-'));
+  await mkdir(path.join(foreign, 'artifacts'), { recursive: true });
+  await writeFile(path.join(foreign, 'artifacts', 'x.html'), '<html></html>', 'utf8');
+  assert.equal((await askLibrary('?root=' + enc(foreign))).code, 403);
+  const foreignFile = await askFile('?root=' + enc(foreign) + '&path=artifacts/x.html');
+  assert.equal(foreignFile.code, 403);
+  assert.equal(foreignFile.payload.error, 'root not allowed');
+
+  // Allowed: the artifact itself, with its bytes and mime.
+  const demo = await askFile('?root=' + enc(closedRoot) + '&path=artifacts/closed-demo.html');
+  assert.equal(demo.code, 200);
+  assert.equal(demo.payload.ok, true);
+  assert.equal(demo.payload.mime, 'text/html; charset=utf-8');
+  assert.match(Buffer.from(demo.payload.dataBase64, 'base64').toString('utf8'), /Закрытый · артефакт/);
+  // Outside artifacts/ is readable too (the owner's decision), because the list
+  // offers it and a row that cannot be opened is a dead end.
+  const outsideRead = await askFile('?root=' + enc(closedRoot) + '&path=recent-outside.html');
+  assert.equal(outsideRead.code, 200);
+  assert.match(Buffer.from(outsideRead.payload.dataBase64, 'base64').toString('utf8'), /Closed · outside/);
+
+  // Malformed paths: absolute, traversal, empty segments.
+  for (const badPath of ['../outside.html', 'artifacts/../recent-outside.html', '/abs.html', 'C:/abs.html', 'artifacts//x.html']) {
+    const result = await askFile('?root=' + enc(closedRoot) + '&path=' + enc(badPath));
+    assert.equal(result.code, 400, 'malformed path: ' + badPath);
+  }
+  assert.equal((await askFile('?root=' + enc(closedRoot))).code, 400, 'path is required');
+  assert.equal((await askFile('?path=artifacts/closed-demo.html')).code, 400, 'root is required');
+  assert.equal((await askFile('?root=not-absolute&path=artifacts/closed-demo.html')).code, 400);
+
+  // Only HTML: a text or image file with an HTML name would be fine, but another
+  // extension is a different tab's job.
+  assert.equal((await askFile('?root=' + enc(closedRoot) + '&path=artifacts/notes.txt')).code, 400);
+  assert.equal((await askFile('?root=' + enc(closedRoot) + '&path=artifacts/pic.png')).code, 400);
+
+  // Size cap, missing file and a directory that looks like an artifact.
+  const big = await askFile('?root=' + enc(closedRoot) + '&path=artifacts/big.html');
+  assert.equal(big.code, 413);
+  assert.equal(big.payload.error, 'file too large');
+  assert.equal((await askFile('?root=' + enc(closedRoot) + '&path=artifacts/missing.html')).code, 404);
+  await mkdir(path.join(closedRoot, 'artifacts', 'looks-like.html'), { recursive: true });
+  assert.equal((await askFile('?root=' + enc(closedRoot) + '&path=artifacts/looks-like.html')).code, 404);
+
+  // A symlinked directory escaping the workspace resolves outside it and is
+  // refused. Junction creation needs no privilege on Windows; a host without it
+  // reports the check as skipped instead of failing the suite.
+  let junctionMade = false;
+  try {
+    const escapeTarget = await mkdtemp(path.join(tmpdir(), 'artifact-panes-escape-'));
+    await writeFile(path.join(escapeTarget, 'secret.html'), '<html>secret</html>', 'utf8');
+    await symlink(escapeTarget, path.join(closedRoot, 'artifacts', 'escape'), 'junction');
+    junctionMade = true;
+  } catch (error) {
+    console.log('  symlink containment check skipped:', String(error && error.code));
+  }
+  if (junctionMade) {
+    const escaped = await askFile('?root=' + enc(closedRoot) + '&path=artifacts/escape/secret.html');
+    assert.equal(escaped.code, 403, 'a symlink out of the workspace is refused');
+    assert.equal(escaped.payload.error, 'outside workspace');
+  }
+
+  // Wrong method is rejected without touching the disk.
+  const wrongMethod = response();
+  await routes.get('/artifact-panes/file').handler({ method: 'POST' }, wrongMethod.res);
+  assert.equal(wrongMethod.out.code, 405);
+
+  // The fixture root is not a live session, so the session-scoped list is
+  // unaffected and the known-root rule does not widen it.
+  const liveScoped = await askLibrary('?sessionId=sess-1');
+  assert.equal(liveScoped.code, 200);
+  assert.ok(liveScoped.payload.artifacts.some((item) => item.title === 'Демо · артефакт'));
+
+  await rm(foreign, { recursive: true, force: true });
+  await rm(closedRoot, { recursive: true, force: true });
+  await rm(process.env.DSH_HOME, { recursive: true, force: true });
+}
+
+function safeParse(text) {
+  try { return JSON.parse(text); } catch (e) { return undefined; }
 }
 
 await rm(root, { recursive: true, force: true });

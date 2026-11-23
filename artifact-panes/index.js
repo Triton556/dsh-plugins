@@ -7,12 +7,12 @@
 //  - GET  /artifact-panes/state   вЂ” the last saved answers, so a reload restores them.
 //
 // The tab type, dropdown and renderer live in ./client.js.
-import { mkdir, writeFile, readFile, readdir, unlink } from 'node:fs/promises'
+import { mkdir, writeFile, readFile, readdir, unlink, stat, realpath } from 'node:fs/promises'
 import { writeFileSync } from 'node:fs'
 import { appendFileSync } from 'node:fs'
 import { execFile } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { relative } from 'node:path'
+import { relative, resolve, join, isAbsolute } from 'node:path'
 
 const bootLog = 'C:/Users/Danil/Documents/deepseek-harness/default-workspace/tools/codex-worker/evidence/tools-v1/host-load.log'
 const dividerDiagLog = 'C:/Users/Danil/Documents/deepseek-harness/default-workspace/tools/codex-worker/evidence/tools-v1/divider-diag.log'
@@ -27,6 +27,57 @@ boot('module-import')
 // The existing HTTP routes require webServer; tools are awaited in a child.
 // attachments is optional and is obtained through ctx.get, not ctx.attachments.
 export const inject = ['webServer']
+
+// What `/artifact-panes/file` may serve: an HTML artifact of one known
+// workspace, capped so one page cannot pin megabytes of base64 in the answer.
+const ARTIFACT_BYTES_LIMIT = 5 * 1024 * 1024
+const ARTIFACT_EXT = /\.(?:html?|xhtml)$/i
+
+// One spelling for comparing workspace paths: forward slashes, no trailing
+// separator, case-folded (Windows paths are case-insensitive).
+const wsKey = (value) => String(value || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+
+const versionOf = (info) => `${info.dev}:${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`
+
+// A `node:fs` face shaped like the sandboxed `fs` service, so the library walk
+// runs unchanged over a workspace the sandbox refuses (a closed one).
+const nodeIo = {
+  async resolve(path) {
+    const info = await stat(path)
+    if (!info.isDirectory()) throw new Error('not a directory: ' + path)
+    return { targetKey: wsKey(path), path }
+  },
+  async listDir(target) {
+    const entries = await readdir(target.path, { withFileTypes: true })
+    const out = []
+    for (const entry of entries) {
+      const full = join(target.path, entry.name)
+      let info
+      try {
+        info = await stat(full, { bigint: true })
+      } catch (e) {
+        // A drained entry or an unreadable name: still list it, like the
+        // service does, so the list never hides a race.
+        out.push({ name: entry.name, type: entry.isDirectory() ? 'directory' : 'file', target: { targetKey: wsKey(full), path: full }, version: '0:0:0:0:0', size: 0 })
+        continue
+      }
+      out.push({
+        name: entry.name,
+        type: entry.isDirectory() ? 'directory' : 'file',
+        target: { targetKey: wsKey(full), path: full },
+        version: versionOf(info),
+        size: Number(info.size),
+      })
+    }
+    return out
+  },
+  async readText(target) {
+    return readFile(target.path, 'utf8')
+  },
+  processPath(target) {
+    return target.path
+  },
+}
 
 export function apply(ctx) {
   const has = (name) => { try { return !!ctx.get(name) } catch { return false } }
@@ -52,6 +103,60 @@ export function apply(ctx) {
 
   const titleCache = new Map()
   const abs = (root, rel) => String(root).replace(/[\\/]+$/, '') + '/' + rel
+
+  // Every cwd the persisted session index remembers. A session that is not
+  // live still names a workspace; this is what makes it readable.
+  async function closedWorkspaceRecords() {
+    const records = []
+    try {
+      const home = process.env.DSH_HOME || 'F:/DeepSeek-Harness/data'
+      const dir = home.replace(/[\\/]+$/, '') + '/storages/session_projcache/sessions'
+      for (const name of await readdir(dir)) {
+        if (!name.endsWith('.json')) continue
+        let record
+        try {
+          record = JSON.parse(await readFile(dir + '/' + name, 'utf8'))
+        } catch (e) { continue }
+        const cwd = record && record.record && record.record.identity && record.record.identity.cwd
+        if (typeof cwd !== 'string' || !cwd) continue
+        records.push({ indexId: name.replace(/\.json$/, ''), cwd })
+      }
+    } catch (e) { /* no index available: live sessions only */ }
+    return records
+  }
+
+  // The workspaces this plugin may read: cwds of live sessions first, then the
+  // ones only the closed index remembers. Keyed by the normalized path, which
+  // is exactly the check `/library?root=` and `/file` apply.
+  async function knownWorkspaces() {
+    const byKey = new Map()
+    try {
+      const sessions = ctx.get('sessions')
+      const list = sessions && typeof sessions.list === 'function' ? sessions.list() : []
+      for (const session of list || []) {
+        const cwd = session && session.header && typeof session.header.cwd === 'string' ? session.header.cwd : ''
+        if (!cwd) continue
+        const key = wsKey(cwd)
+        if (byKey.has(key)) continue
+        byKey.set(key, { cwd, live: true, sessionId: session.id })
+      }
+    } catch (e) { /* no session service: closed workspaces only */ }
+    for (const record of await closedWorkspaceRecords()) {
+      const key = wsKey(record.cwd)
+      if (byKey.has(key)) continue
+      byKey.set(key, { cwd: record.cwd, live: false, sessionId: null, indexId: record.indexId })
+    }
+    return byKey
+  }
+
+  // The workspace a `root` parameter names, or undefined when it is not one of
+  // the workspaces above. Registration is by normalized path, so trailing
+  // separators and case do not decide access.
+  async function knownWorkspace(root) {
+    if (typeof root !== 'string' || !root || root.length > 4096 || !isAbsolute(root)) return undefined
+    const known = await knownWorkspaces()
+    return known.get(wsKey(root))
+  }
 
   // The library root is the workspace the user actually works in: the cwd of
   // the most recently created live session. sandboxPolicy.workspaceRoot is
@@ -101,12 +206,8 @@ export function apply(ctx) {
         res.end(JSON.stringify(payload))
       }
       const fs = ctx.get('fs')
-      const sessions = ctx.get('sessions')
-      const list = sessions && typeof sessions.list === 'function' ? sessions.list() : []
-      const seen = new Map()
       const norm = (cwd) => String(cwd || '').replace(/[\\/]+$/, '').replace(/\\/g, '/')
       const labelOf = (cwd) => norm(cwd).split('/').filter(Boolean).pop() || norm(cwd)
-      const keyOf = (cwd) => norm(cwd).toLowerCase()
       const hasArtifactsDir = async (cwd) => {
         try {
           if (!fs || typeof fs.stat !== 'function') return false
@@ -114,48 +215,35 @@ export function apply(ctx) {
           return !!(info && info.type === 'directory')
         } catch (e) { return false }
       }
+      const known = await knownWorkspaces()
+      const workspaces = []
       // Live sessions first: they can be read through workspaceFiles.
-      for (const session of list || []) {
-        const cwd = session && session.header && typeof session.header.cwd === 'string' ? session.header.cwd : ''
-        if (!cwd) continue
-        const key = keyOf(cwd)
-        if (seen.has(key)) continue
-        seen.set(key, {
-          sessionId: session.id,
-          cwd,
-          label: labelOf(cwd),
-          hasArtifacts: await hasArtifactsDir(cwd),
+      for (const entry of known.values()) {
+        if (!entry.live) continue
+        workspaces.push({
+          sessionId: entry.sessionId,
+          cwd: entry.cwd,
+          label: labelOf(entry.cwd),
+          hasArtifacts: await hasArtifactsDir(entry.cwd),
           live: true,
         })
       }
       // Closed sessions: the persisted index keeps every session with its cwd,
-      // so their workspaces are offered before the user reopens them.
-      try {
-        const { readdir, readFile } = await import('node:fs/promises')
-        const home = process.env.DSH_HOME || 'F:/DeepSeek-Harness/data'
-        const dir = home.replace(/[\\/]+$/, '') + '/storages/session_projcache/sessions'
-        for (const name of await readdir(dir)) {
-          if (!name.endsWith('.json')) continue
-          let record
-          try {
-            record = JSON.parse(await readFile(dir + '/' + name, 'utf8'))
-          } catch (e) { continue }
-          const cwd = record && record.record && record.record.identity && record.record.identity.cwd
-          if (typeof cwd !== 'string' || !cwd) continue
-          const key = keyOf(cwd)
-          if (seen.has(key)) continue
-          if (!await hasArtifactsDir(cwd)) continue
-          seen.set(key, {
-            sessionId: null,
-            indexId: name.replace(/\.json$/, ''),
-            cwd,
-            label: labelOf(cwd),
-            hasArtifacts: true,
-            live: false,
-          })
-        }
-      } catch (e) { /* no index available: live sessions only */ }
-      const workspaces = [...seen.values()].sort((a, b) => a.label.localeCompare(b.label))
+      // so their workspaces are offered before the user reopens them. Only those
+      // that actually have artifacts/ are worth a row in the picker.
+      for (const entry of known.values()) {
+        if (entry.live) continue
+        if (!await hasArtifactsDir(entry.cwd)) continue
+        workspaces.push({
+          sessionId: null,
+          indexId: entry.indexId,
+          cwd: entry.cwd,
+          label: labelOf(entry.cwd),
+          hasArtifacts: true,
+          live: false,
+        })
+      }
+      workspaces.sort((a, b) => a.label.localeCompare(b.label))
       send({ ok: true, workspaces })
     },
   }), 'artifact-panes: workspaces route')
@@ -205,15 +293,36 @@ export function apply(ctx) {
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
         res.end(JSON.stringify(payload))
       }
-      const fs = ctx.get('fs')
-      if (!fs || typeof fs.listDir !== 'function') { send({ ok: false, artifacts: [], error: 'filesystem unavailable' }); return }
+      const fsService = ctx.get('fs')
       const query = (() => {
         try { return new URL(String(req.url || '/'), 'http://127.0.0.1').searchParams } catch (e) { return new URLSearchParams() }
       })()
       const sessionId = query.get('sessionId') || ''
       const includeOutside = query.get('outside') === '1'
-      const root = await resolveLibraryRoot(ctx, fs, sessionId)
+      // `root` names a workspace by path: a closed session's workspace has no
+      // session id to list through, so the picker passes the cwd it was given.
+      // The same known-workspace rule authorizes it as `/artifact-panes/file`.
+      // Without the parameter the live-session behaviour is unchanged.
+      const requestedRoot = query.get('root') || ''
+      let root
+      let io = fsService
+      if (requestedRoot) {
+        const entry = await knownWorkspace(requestedRoot)
+        if (!entry) {
+          res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+          res.end(JSON.stringify({ ok: false, artifacts: [], error: 'root not allowed' }))
+          return
+        }
+        root = entry.cwd
+        io = nodeIo
+      } else {
+        root = await resolveLibraryRoot(ctx, fsService, sessionId)
+      }
       if (!root) { send({ ok: false, artifacts: [], error: 'workspace not resolved' }); return }
+      if (!io || typeof io.listDir !== 'function') { send({ ok: false, artifacts: [], error: 'filesystem unavailable' }); return }
+      // The walk below is written against the `fs` face; the adapter is the
+      // sandboxed service for a live session and plain node:fs for a root.
+      const fs = io
       const wanted = /\.(?:html?|xhtml|md|markdown|svg|pdf)$/i
       const artifacts = []
       const errors = []
@@ -327,6 +436,90 @@ export function apply(ctx) {
       }
     },
   }), 'artifact-panes: library route')
+
+  // Read one HTML artifact of a known workspace by path. This is what a closed
+  // workspace needs: no live session id exists to read through
+  // `workspaceFiles`, so the pane asks here, and the answer is authorized by the
+  // same rule as `/library?root=` plus a realpath containment check.
+  ctx.effect(() => webServer.register({
+    kind: 'exact',
+    path: '/artifact-panes/file',
+    handler: async (req, res) => {
+      const send = (code, payload) => {
+        res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+        res.end(JSON.stringify(payload))
+      }
+      if (req.method !== 'GET') { send(405, { ok: false, error: 'GET only' }); return }
+      const query = (() => {
+        try { return new URL(String(req.url || '/'), 'http://127.0.0.1').searchParams } catch (e) { return new URLSearchParams() }
+      })()
+      const rawRoot = String(query.get('root') || '').trim()
+      const relPath = String(query.get('path') || '').replace(/\\/g, '/').trim()
+      if (!rawRoot || !relPath) { send(400, { ok: false, error: 'root and path are required' }); return }
+      if (rawRoot.length > 4096 || relPath.length > 4096) { send(400, { ok: false, error: 'path is too long' }); return }
+      if (!isAbsolute(rawRoot)) { send(400, { ok: false, error: 'root must be absolute' }); return }
+      // The path is a workspace-relative address, never an absolute one and
+      // never a traversal: `..` would name a file the workspace list did not
+      // offer, and that is a malformed request, not a permission question.
+      const segments = relPath.split('/')
+      if (relPath.startsWith('/') || /^[A-Za-z]:/.test(relPath)
+        || segments.some((segment) => segment === '' || segment === '.' || segment === '..')) {
+        send(400, { ok: false, error: 'path must be relative to the workspace' })
+        return
+      }
+      // Only one kind of file is ever served through this route.
+      if (!ARTIFACT_EXT.test(relPath)) { send(400, { ok: false, error: 'not html' }); return }
+      const entry = await knownWorkspace(rawRoot)
+      if (!entry) { send(403, { ok: false, error: 'root not allowed' }); return }
+      let rootReal
+      try {
+        rootReal = await realpath(resolve(entry.cwd))
+      } catch (e) {
+        send(404, { ok: false, error: 'workspace not found' })
+        return
+      }
+      let fileReal
+      try {
+        fileReal = await realpath(resolve(rootReal, relPath))
+      } catch (e) {
+        send(404, { ok: false, error: 'not found' })
+        return
+      }
+      // Containment on the real path: a symlink inside the workspace that points
+      // somewhere else resolves to its target and is refused.
+      const rootKey = wsKey(rootReal)
+      const fileKey = wsKey(fileReal)
+      if (fileKey !== rootKey && !fileKey.startsWith(rootKey + '/')) {
+        send(403, { ok: false, error: 'outside workspace' })
+        return
+      }
+      let info
+      try {
+        info = await stat(fileReal)
+      } catch (e) {
+        send(404, { ok: false, error: 'not found' })
+        return
+      }
+      if (!info.isFile()) { send(404, { ok: false, error: 'not a file' }); return }
+      if (info.size > ARTIFACT_BYTES_LIMIT) {
+        send(413, { ok: false, error: 'file too large', size: info.size, limit: ARTIFACT_BYTES_LIMIT })
+        return
+      }
+      try {
+        const buffer = await readFile(fileReal)
+        send(200, {
+          ok: true,
+          root: rootReal,
+          path: relPath,
+          mime: 'text/html; charset=utf-8',
+          size: buffer.length,
+          dataBase64: buffer.toString('base64'),
+        })
+      } catch (e) {
+        send(500, { ok: false, error: e && e.message ? String(e.message) : 'read failed' })
+      }
+    },
+  }), 'artifact-panes: file route')
 
   // Questionnaire answers. The sandboxed iframe cannot write files, so the
   // client forwards its postMessage payloads here:

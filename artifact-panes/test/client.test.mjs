@@ -126,6 +126,19 @@ assert.equal(def.canOpen(addr('artifacts/notes.md')), false);
 assert.equal(def.canOpen('dsh-resource://file/absolute/C:/a.html'), false, 'absolute scope must not be claimed');
 assert.equal(def.title(addr('artifacts/%D1%81%D1%85%D0%B5%D0%BC%D0%B0.html')), 'схема.html');
 
+// A closed workspace has no session id, so its tabs are addressed by root:
+// dsh-resource://file/workspace/<base64url(root)>/<path>. The type claims both
+// scopes; only the artifact extensions are accepted.
+const rootPath = 'C:\\Users\\Danil\\Documents\\ChatGPT\\AI-Sasha';
+const wsAddr = (p, root = rootPath) =>
+  'dsh-resource://file/workspace/' + Buffer.from(root, 'utf8').toString('base64url') + '/' + p;
+assert.equal(def.canOpen(wsAddr('artifacts/closed.html')), true, 'a workspace-scope artifact opens');
+assert.equal(def.canOpen(wsAddr('recent-outside.html')), true, 'an artifact outside artifacts/ opens too');
+assert.equal(def.canOpen(wsAddr('artifacts/notes.txt')), false, 'non-html stays with the other tabs');
+assert.equal(def.canOpen('dsh-resource://file/workspace//artifacts/x.html'), false, 'a missing root is no address');
+assert.equal(def.canOpen('dsh-resource://file/workspace/' + Buffer.from(rootPath, 'utf8').toString('base64url')), false, 'a missing path is no address');
+assert.equal(def.title(wsAddr('artifacts/%D1%81%D1%85%D0%B5%D0%BC%D0%B0.html')), 'схема.html');
+
 // The browser page type carries the guide card shown on the sidebar start page.
 assert.equal(browser.kind, 'artifact-browser');
 assert.equal(browser.priority, 'builtin');
@@ -195,6 +208,14 @@ assert.ok(kids.length >= 2, 'header + body');
 assert.equal(typeof kids[0].type, 'function', 'header is the first child');
 const bodyEl = kids[kids.length - 1];
 assert.ok(bodyEl && (bodyEl.type === 'iframe' || bodyEl.type === 'div'), 'body is the last child');
+
+// A tab read by workspace root says so in its header; a session tab does not.
+const headerOf = (rendered) => rendered.children[0].type(rendered.children[0].props);
+const closedTree = renderBody(wsAddr('artifacts/closed.html'), () => Promise.resolve({ ok: true, value: { data: new Uint8Array(), version: 1 } }));
+const closedHeader = headerOf(closedTree);
+const mark = (node) => findNodes(node, (n) => Array.isArray(n.children) && n.children.includes('закрыт'));
+assert.ok(mark(closedHeader).length >= 1, 'a closed-workspace tab carries the "закрыт" mark');
+assert.equal(mark(headerOf(tree)).length, 0, 'a live session tab carries no mark');
 
 // Regression: picking another artifact in the dropdown used to throw on an
 // undefined ref before setCurrent, so the selector never switched files.

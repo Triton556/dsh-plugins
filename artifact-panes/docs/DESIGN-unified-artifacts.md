@@ -96,6 +96,11 @@ choices survive a reload.
 Restore open tabs, keyboard navigation, empty/error states, docs, and a unit test
 for the library route with two fake workspaces.
 
+**Slice 4 — closed workspaces (design below).**
+Read and show artifacts of a workspace with no live session: two host routes
+(`/library?root=`, `/file`), a new tab address scope, the picker offering closed
+workspaces, and a "closed" mark in the header.
+
 ## Risks
 
 - The sidebar addresses tabs by resource address today; the new opener must not
@@ -113,3 +118,267 @@ for the library route with two fake workspaces.
 - "open in new tab" included in the first picker version;
 - workspaces from live sessions only; no session → disabled;
 - default list is always the current workspace.
+
+# Slice 4: artifacts of a closed workspace
+
+Status: implemented and verified live (2026-11-23). Supersedes the slice-2 line
+"no live session → disabled".
+
+Goal: a workspace listed in the picker **because a closed session used it** can be
+browsed and its artifacts shown, without reopening that session first.
+
+## Verified state (2026-11-23, read-only checks)
+
+- `GET /artifact-panes/workspaces` is live and returns a closed entry:
+  `{"sessionId":null,"cwd":"C:\\Users\\Danil\\Documents\\ChatGPT\\AI-Sasha",
+  "hasArtifacts":true,"live":false}` next to the live `default-workspace` session
+  (checked with `Invoke-WebRequest http://127.0.0.1:52965/artifact-panes/workspaces`;
+  the GUI answers its own web routes on localhost).
+- Tabs are claimed by address only: `SidebarRight.claim` consults the tab-type
+  registry (`patterns` + `canOpen`), not the resource model, so a new address scope
+  in `dsh-resource://file/...` opens as long as this plugin claims it
+  (`dsh-client-ui-sidebar-right/src/client/tab-registry.ts`, `service.ts`).
+- The built-in `file` resource provider parses only `session/` and `absolute/`
+  scopes and answers any other scope with one typed failure frame
+  (`dsh-api-workspace-files/src/client/provider.ts`,
+  `dsh-util-workspace-path/src/file-address.ts`). No built-in code resolves a new
+  scope; none is broken by one.
+- The client has two surfaces with the same workspace selector and list:
+  `ArtifactBody` (a file tab, `ArtifactMenu`) and `ArtifactBrowser` (the Artifacts
+  page). The tab menu already opens a tab via `openResource`; the page shows the
+  chosen artifact in place.
+- `AI-Sasha/artifacts` holds both small HTML (`voice-progress.html` 1.6 KB) and
+  oversized ones (`disputed.html` 11 MB, `who-v2.html` 18 MB): live cases for the
+  5 MB cap and for refusal.
+
+## Chosen option
+
+**New tab address scope `workspace`, plus two read-only host routes.**
+
+```
+dsh-resource://file/workspace/<base64url(root cwd)>/artifacts/<rel path>
+```
+
+- The root travels inside the tab identity, so a closed-workspace tab survives a
+  reload and needs no in-memory registry or synthetic session id.
+- The tab title stays `basenameOf(address)`, exactly like a session tab.
+- Rejected: naming the file by `absolute/<path>` (carries no root, so the read
+  route would have to re-derive it and the grammar would claim "no session"
+  semantics that do not apply); a fake session id (would hit the real
+  `workspaceFiles` remote and fail in a way the user cannot read).
+- Rejected: reading bytes through `ctx.remote.workspaceFiles` with a synthetic
+  session — the Host authorizes by session, so there is nothing to authorize.
+
+The known-workspace set is the single source of truth for both routes: the cwds of
+live sessions plus the cwds in `$DSH_HOME/storages/session_projcache/sessions/*.json`
+(`record.identity.cwd`). A requested `root` must normalize (case-insensitive,
+`path.resolve`, no trailing slash) into that set; anything else is `403`.
+
+## Host protocol
+
+### `GET /artifact-panes/file?root=<cwd>&path=<workspace-relative path>`
+
+| Case | Status | Body |
+| --- | --- | --- |
+| ok | 200 | `{ok:true, dataBase64, mime:'text/html; charset=utf-8', size}` |
+| `root`/`path` missing, empty, not a string, or `root` not absolute | 400 | `{ok:false, error}` |
+| path is absolute, or carries a `..` segment | 400 | `{ok:false, error}` |
+| `root` not in the known-workspace set | 403 | `{ok:false, error:'root not allowed'}` |
+| real path of the file is not inside `<real root>` | 403 | `{ok:false, error:'outside workspace'}` |
+| file does not exist / is not a regular file | 404 | `{ok:false, error:'not found'}` |
+| extension is not `html|htm|xhtml` | 400 | `{ok:false, error:'not html'}` |
+| size > 5 MB (5 · 1024 · 1024 bytes, `stat` before read) | 413 | `{ok:false, error:'file too large'}` |
+
+Reads use plain `node:fs/promises` on the resolved absolute path (the sandboxed
+`fs` service refuses paths outside the sandbox, and a closed workspace is exactly
+that case). Containment is checked on `realpath` of both `<root>` and the file, so
+a symlink out of the workspace is refused. The read surface is wider than
+`artifacts/` on the owner's decision: any `*.html|*.htm|*.xhtml` inside a known
+workspace root, so the already-listed "HTML вне artifacts/" rows are readable too.
+Nothing else is served: not `.md`, `.pdf`, `.png`, `.wav`, not a directory, not the
+workspace root itself.
+
+### `GET /artifact-panes/library?root=<cwd>[&outside=1]`
+
+Same known-root check (`403` otherwise). The scan is the existing walk, run through
+a `node:fs` adapter shaped like the `fs` service (`resolve` → target, `listDir`,
+`readText`, `processPath`) so there is one list implementation, not two. Entries and
+the response keep today's shape (`path`, `rel`, `title`, `size`, `mtime`, `root`).
+`outside=1` keeps its session-mode rule (recent HTML outside `artifacts/`, 30 days,
+≤ 50 files, depth 3, build folders skipped) and now works in root mode as well,
+because `/file` serves those files too.
+
+## Client
+
+**Address grammar.** `parseFileAddress` learns one more scope and a builder joins
+it:
+
+```js
+workspaceFileAddress(root, 'artifacts/x.html')
+  // dsh-resource://file/workspace/QzpcVXNlcnNcLi4u/artifacts/x.html
+```
+
+base64url of the root's UTF-8 bytes: ASCII-only, no `/` or `%` surprises inside a
+path segment. `canOpen` accepts `scope === 'workspace'` with the same
+`*.html|*.htm|*.xhtml` rule; `absolute/` stays refused.
+
+**Reading.** Both surfaces read through one helper that dispatches on the file's
+origin: a session file keeps `ctx.remote.workspaceFiles.readBytes`, a workspace
+file becomes `fetch('/artifact-panes/file?root=…&path=…')` → `dataBase64` decoded to
+a `Uint8Array`. The result shape stays `{ok, value:{data, version}}` /
+`{ok:false, error:{message}}`, so the polling, fingerprinting and live-reload code
+is untouched. The request path is the `rel` the library already returns
+(workspace-relative, so `artifacts/x.html` or a recent HTML outside it), not a
+string rebuilt from the absolute path.
+
+**Picker.** A closed entry becomes selectable (`value = cwd:<cwd>`, no `disabled`),
+labelled `label` (tooltip = cwd). The selection decides where the list comes from:
+
+| Selected | Library request | Opening a row |
+| --- | --- | --- |
+| this tab's workspace, live | `/library` (no params) | session tab (`sessionFileAddress`) |
+| another live workspace | `/library?sessionId=…` | session tab |
+| a closed workspace | `/library?root=…` | workspace tab (`workspaceFileAddress`) |
+
+`outside=1` can be combined with every row of that table. In `ArtifactBrowser` the
+same three cases keep its current behaviour — the chosen file is shown *in that
+page* — but the read goes through the dispatch helper, and `current` carries the
+optional `root` it came from. The page therefore no longer needs a live session to
+display a closed workspace artifact.
+
+**Header mark.** A workspace-scope tab shows a `закрыт` chip in its header
+(tooltip = the workspace path), so the tab never looks live. The Artifacts page
+shows the same chip while a closed workspace is selected, and its select option
+reads `AI-Sasha (закрыт)`.
+
+**Consequences to keep in mind.** Answers from a survey inside a closed-workspace
+artifact still go to the *current* workspace (the answer route resolves by the
+current session), as the design already states for cross-workspace browsing. The
+`file` resource stream of such a tab ends with one `unknown-workspace` frame; the
+body only reads `version` from a `live` snapshot, so nothing else reacts to it.
+
+## Tests
+
+`test/host.test.mjs` (fake `$DSH_HOME` with one `session_projcache` record):
+
+1. `/library?root=<closed cwd>` lists that workspace's artifacts and returns
+   `root = <cwd>/artifacts`; `/library?root=<unknown>` → 403.
+2. `/file?root=<closed cwd>&path=artifacts/demo.html` → 200, base64 decodes to the
+   file bytes, `mime` is `text/html`; a recent HTML outside `artifacts/` → 200 as
+   well.
+3. Escape attempts → 403: `../outside.html`, `artifacts/../outside.html`,
+   `artifacts/../../root.html`, and a symlink under `artifacts/` pointing outside
+   the workspace.
+4. A foreign root (not live, not in the index) → 403.
+5. Non-HTML (`artifacts/notes.txt`, `artifacts/pic.png`) → 400; missing params and
+   absolute `path` → 400.
+6. A 5 MB + 1 byte file → 413; a file just under the cap → 200.
+7. Missing file → 404; a path to a directory → 404.
+
+`test/client.test.mjs`: `canOpen` accepts the `workspace` scope for html and still
+refuses `absolute/` and non-html; the workspace address round-trips to the same
+root and relative path.
+
+## Live verification (no screenshots)
+
+Host, straight over localhost (the GUI answers its own routes):
+
+```
+GET /artifact-panes/file?root=C:\Users\Danil\Documents\ChatGPT\AI-Sasha&path=artifacts/voice-progress.html   → 200
+GET /artifact-panes/file?root=<same>&path=../DECISIONS.md                                                    → 403
+GET /artifact-panes/file?root=C:\Windows&path=artifacts/x.html                                               → 403
+GET /artifact-panes/file?root=<same>&path=artifacts/disputed.html                                            → 413
+GET /artifact-panes/library?root=<same>                                                                      → 200, artifacts of AI-Sasha
+```
+Client, through the existing DOM channel (`.dsh/artifact-panes/ui-command.json` →
+answer route), extended with two read-only commands: `select` (set a native
+`<select>` value and dispatch `change`) and `http` (GET an `/artifact-panes/*` URL
+from the page and return status + the first bytes), so no screenshot is needed:
+
+1. open an artifact tab, open the dropdown, `select` `cwd:<AI-Sasha>`;
+2. `query .dap-menu .dap-item` → the closed workspace's rows, workspace-relative;
+3. `click` the `voice-progress.html` row → a new tab whose header contains
+   `закрыт` and whose title came from the file's `<title>` (proves the bytes went
+   through `/file`);
+4. `click` the `disputed.html` row → the tab shows the 413 error, not a blank pane.
+
+## Out of scope for this slice
+
+- Writing into a closed workspace, and the file tree, browser and terminal tabs.
+- The Artifacts page opening closed-workspace artifacts in extra tabs (it shows
+  them in place; the tab menu is what opens tabs).
+- Restoring `ArtifactBrowser`'s selected workspace after a reload (unchanged).
+
+## Risks
+
+- A wrong root normalisation could deny a legitimate workspace (case, symlinked
+  home, trailing slash) — the check compares resolved, case-folded paths and the
+  error is explicit; the tests pin the accepted and refused cases.
+- A closed-workspace tab depends on the root still existing; if the folder moves,
+  the tab reports a read error instead of silently showing something else.
+- `node:fs` in the two routes bypasses the sandbox `fs` service; the only roots it
+  will touch are the ones the workspace list already exposes, and only HTML files
+  inside them.
+
+## Decisions log (slice 4, 2026-11-23)
+
+- reading is allowed across the whole workspace root, not only `artifacts/`
+  (owner's choice): the "HTML вне artifacts/" rows the list already offers must be
+  openable, and the realpath containment on the root is the security boundary;
+- a closed workspace in the Artifacts page shows the file **in place**, like a live
+  one; the file tab's menu is what opens a new tab;
+- the select's empty value always means the live session's workspace; a closed
+  workspace stays a listed option (`cwd:<path>`), and the one in force is never
+  filtered out of the option list, or a native select could not display it;
+- host statuses: 400 malformed path / non-HTML / non-absolute root, 403 unknown
+  root or realpath outside it, 404 missing file or directory, 413 over 5 MB;
+- `..` and absolute paths are malformed requests (400), not permission failures:
+  the client never builds them, and the containment check stays on the root.
+
+## Verification results (2026-11-23, live)
+
+Host, against the real closed workspace `C:\Users\Danil\Documents\ChatGPT\AI-Sasha`
+(`GET` from the GUI origin, `http://127.0.0.1:<port>`):
+
+| Request | Result |
+| --- | --- |
+| `/workspaces` | 200, `AI-Sasha` with `sessionId:null, live:false`, live `default-workspace` beside it |
+| `/library?root=AI-Sasha` | 200, 22 artifacts, workspace-relative `rel`, titles read |
+| `/library?root=AI-Sasha&outside=1` | 200 (no HTML outside `artifacts/` in that workspace) |
+| `/library?root=AI-Sasha\` (trailing separator) | 200, same listing |
+| `/library?root=C:\Windows` | 403 `root not allowed` |
+| `/file?…&path=artifacts/voice-progress.html` | 200, 1629 bytes, `text/html`, base64 decodes to the page with its `<title>` |
+| `/file` for `docs/plan/plan.html` of a live workspace | 200 (outside `artifacts/` is readable) |
+| `/file?…&path=../DECISIONS.md`, `artifacts/../../x.html`, `C:/a.html` | 400 `path must be relative to the workspace` |
+| `/file?root=not-absolute` | 400 `root must be absolute` |
+| `/file?…&path=artifacts/zeroshot-test1.wav` | 400 `not html` |
+| `/file?…&path=artifacts/disputed.html` (11 MB) | 413 `file too large`, `size: 11162882`, `limit: 5242880` |
+| `/file?…&path=artifacts/nope.html` | 404 `not found` |
+| `/file?root=C:\Windows&path=…` | 403 `root not allowed` |
+
+Client, through the DOM channel (no screenshots):
+
+- the picker offered `AI-Sasha (закрыт)`, `disabled:false`; selecting it listed the
+  22 artifacts of the closed workspace with workspace-relative paths;
+- clicking `voice-progress.html` opened a **new tab** whose header read
+  `HTML Прогресс голосового конвейера закрыт ▾ artifacts/voice-progress.html` —
+  the mark plus the `<title>` proves the bytes came through `/file`;
+- the same selection inside the **Artifacts page** rendered in place: header
+  `… закрыт 22 ▾`, one 559×684 iframe with the artifact;
+- `disputed.html` produced `Could not read the file / file too large` both in a
+  tab and in the page — no blank pane;
+- the channel's `http` probe returned the same 400 body as the direct request.
+
+Two defects were found by that check and fixed before the last round:
+
+- the page listed the selected closed workspace as an option and the code filtered
+  it out, so the controlled `<select>` could not show `cwd:…` and fell back to `''`
+  — the option in force is now always kept in the list;
+- the page fetched `/workspaces` once at mount; right after a DSH restart it mounts
+  before the session turns live, so it marked the live workspace "закрыт". It now
+  refetches whenever the menu opens. Re-checked: `'' = default-workspace — текущий`,
+  `AI-Sasha (закрыт)`, and selecting the closed one returns `cwd:C:\…\AI-Sasha`.
+
+Tab-menu regression after those edits: the picker listed the 22 closed artifacts and
+clicking `pipeline-status.html` opened
+`HTML Пайплайн Саши: текущее состояние закрыт ▾ artifacts/pipeline-status.html`.
