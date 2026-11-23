@@ -4,10 +4,12 @@
 !/.gitattributes
 !/.gitignore
 !/README.md
+!/AGENTS.md
 !/artifact-panes/
 !/artifacts/
 !/docs/
 !/dsh-computer-use/
+!/dsh-browser-bridge/
 !/tools/
 
 # tools/ carries a lot of scratch; publish the packaged helper and health scripts
@@ -53,3 +55,6 @@ docs/health/crash-history.jsonl
 Thumbs.db
 .DS_Store
 *.log
+# --- local secrets (never commit) ---
+/.secrets/
+

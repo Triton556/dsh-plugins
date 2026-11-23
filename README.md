@@ -8,11 +8,16 @@ engines and verification suites.
 
 | package | what it does |
 |---|---|
-| [`dsh-computer-use`](dsh-computer-use/) | 20 first-class tools for driving the desktop: windows, occlusion-proof screenshots, click/drag/type/hotkeys/scroll, focus, Chrome tabs, waits, clipboard, window control, silent launches, frame/video recording, OCR, UI Automation and the Chrome DevTools Protocol |
+| [`dsh-computer-use`](dsh-computer-use/) | First-class tools for driving the desktop: windows, occlusion-proof screenshots, click/drag/type/hotkeys/scroll, focus, Chrome tabs, waits, clipboard, window control, silent launches, frame/video recording, OCR and UI Automation |
+| [`dsh-browser-bridge`](dsh-browser-bridge/) | Browser automation over an MV3 extension and a native messaging host: accessibility snapshots and trusted input in an already running browser, without a debug port or a browser restart |
 | [`artifact-panes`](artifact-panes/) | Artifact panel for the chat: tabs with HTML artifacts plus a draggable divider (blue when widening, red when narrowing) that snaps on release and commits the width outside the gesture |
 | `dsh-claude-style` | Skin: typography, spacing and the mascot/ring indicators that make the desktop app read like a Claude-style workspace |
 | [`docs/`](docs/) | Research notes, plan and stories for the GUI performance work, crash reports collected from the machine |
 | [`tools/`](tools/) | Standalone helpers: `asar.mjs` (inspect any Electron `app.asar`), PowerShell computer-use engine, health/crash collectors |
+
+Agents working in this repository: read [`AGENTS.md`](AGENTS.md) first. It carries
+the working rules (research, design, approval, reporting) and the build/verify
+steps for every package here.
 
 ## `dsh-computer-use` in detail
 
