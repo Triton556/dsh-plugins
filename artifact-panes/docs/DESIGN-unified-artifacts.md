@@ -129,10 +129,12 @@ browsed and its artifacts shown, without reopening that session first.
 
 ## Verified state (2026-11-23, read-only checks)
 
+Local identifiers in these examples are synthetic; the recorded test outcomes are unchanged.
+
 - `GET /artifact-panes/workspaces` is live and returns a closed entry:
-  `{"sessionId":null,"cwd":"C:\\Users\\Danil\\Documents\\ChatGPT\\AI-Sasha",
-  "hasArtifacts":true,"live":false}` next to the live `default-workspace` session
-  (checked with `Invoke-WebRequest http://127.0.0.1:52965/artifact-panes/workspaces`;
+  `{"sessionId":null,"cwd":"C:\\Users\\Example\\Documents\\DSH\\sample-workspace",
+  "hasArtifacts":true,"live":false}` next to the live `sample-active-workspace` session
+  (checked with `Invoke-WebRequest http://127.0.0.1:<port>/artifact-panes/workspaces`;
   the GUI answers its own web routes on localhost).
 - Tabs are claimed by address only: `SidebarRight.claim` consults the tab-type
   registry (`patterns` + `canOpen`), not the resource model, so a new address scope
@@ -147,8 +149,8 @@ browsed and its artifacts shown, without reopening that session first.
   `ArtifactBody` (a file tab, `ArtifactMenu`) and `ArtifactBrowser` (the Artifacts
   page). The tab menu already opens a tab via `openResource`; the page shows the
   chosen artifact in place.
-- `AI-Sasha/artifacts` holds both small HTML (`voice-progress.html` 1.6 KB) and
-  oversized ones (`disputed.html` 11 MB, `who-v2.html` 18 MB): live cases for the
+- `sample-workspace/artifacts` holds both small HTML (`sample-report.html` 1.6 KB) and
+  oversized ones (`oversized-sample.html` 11 MB, `oversized-secondary-sample.html` 18 MB): live cases for the
   5 MB cap and for refusal.
 
 ## Chosen option
@@ -249,7 +251,7 @@ display a closed workspace artifact.
 **Header mark.** A workspace-scope tab shows a `закрыт` chip in its header
 (tooltip = the workspace path), so the tab never looks live. The Artifacts page
 shows the same chip while a closed workspace is selected, and its select option
-reads `AI-Sasha (закрыт)`.
+reads `sample-workspace (закрыт)`.
 
 **Consequences to keep in mind.** Answers from a survey inside a closed-workspace
 artifact still go to the *current* workspace (the answer route resolves by the
@@ -281,26 +283,28 @@ root and relative path.
 
 ## Live verification (no screenshots)
 
+Local identifiers in these examples are synthetic; the recorded test outcomes are unchanged.
+
 Host, straight over localhost (the GUI answers its own routes):
 
 ```
-GET /artifact-panes/file?root=C:\Users\Danil\Documents\ChatGPT\AI-Sasha&path=artifacts/voice-progress.html   → 200
+GET /artifact-panes/file?root=C:\Users\Example\Documents\DSH\sample-workspace&path=artifacts/sample-report.html   → 200
 GET /artifact-panes/file?root=<same>&path=../DECISIONS.md                                                    → 403
 GET /artifact-panes/file?root=C:\Windows&path=artifacts/x.html                                               → 403
-GET /artifact-panes/file?root=<same>&path=artifacts/disputed.html                                            → 413
-GET /artifact-panes/library?root=<same>                                                                      → 200, artifacts of AI-Sasha
+GET /artifact-panes/file?root=<same>&path=artifacts/oversized-sample.html                                            → 413
+GET /artifact-panes/library?root=<same>                                                                      → 200, artifacts of sample-workspace
 ```
 Client, through the existing DOM channel (`.dsh/artifact-panes/ui-command.json` →
 answer route), extended with two read-only commands: `select` (set a native
 `<select>` value and dispatch `change`) and `http` (GET an `/artifact-panes/*` URL
 from the page and return status + the first bytes), so no screenshot is needed:
 
-1. open an artifact tab, open the dropdown, `select` `cwd:<AI-Sasha>`;
+1. open an artifact tab, open the dropdown, `select` `cwd:<sample-workspace>`;
 2. `query .dap-menu .dap-item` → the closed workspace's rows, workspace-relative;
-3. `click` the `voice-progress.html` row → a new tab whose header contains
+3. `click` the `sample-report.html` row → a new tab whose header contains
    `закрыт` and whose title came from the file's `<title>` (proves the bytes went
    through `/file`);
-4. `click` the `disputed.html` row → the tab shows the 413 error, not a blank pane.
+4. `click` the `oversized-sample.html` row → the tab shows the 413 error, not a blank pane.
 
 ## Out of scope for this slice
 
@@ -337,35 +341,37 @@ from the page and return status + the first bytes), so no screenshot is needed:
 
 ## Verification results (2026-11-23, live)
 
-Host, against the real closed workspace `C:\Users\Danil\Documents\ChatGPT\AI-Sasha`
+Local identifiers in these examples are synthetic; the recorded test outcomes are unchanged.
+
+Host, against a closed workspace (shown with a synthetic path) `C:\Users\Example\Documents\DSH\sample-workspace`
 (`GET` from the GUI origin, `http://127.0.0.1:<port>`):
 
 | Request | Result |
 | --- | --- |
-| `/workspaces` | 200, `AI-Sasha` with `sessionId:null, live:false`, live `default-workspace` beside it |
-| `/library?root=AI-Sasha` | 200, 22 artifacts, workspace-relative `rel`, titles read |
-| `/library?root=AI-Sasha&outside=1` | 200 (no HTML outside `artifacts/` in that workspace) |
-| `/library?root=AI-Sasha\` (trailing separator) | 200, same listing |
+| `/workspaces` | 200, `sample-workspace` with `sessionId:null, live:false`, live `sample-active-workspace` beside it |
+| `/library?root=sample-workspace` | 200, 22 artifacts, workspace-relative `rel`, titles read |
+| `/library?root=sample-workspace&outside=1` | 200 (no HTML outside `artifacts/` in that workspace) |
+| `/library?root=sample-workspace\` (trailing separator) | 200, same listing |
 | `/library?root=C:\Windows` | 403 `root not allowed` |
-| `/file?…&path=artifacts/voice-progress.html` | 200, 1629 bytes, `text/html`, base64 decodes to the page with its `<title>` |
+| `/file?…&path=artifacts/sample-report.html` | 200, small file, `text/html`, base64 decodes to the page with its `<title>` |
 | `/file` for `docs/plan/plan.html` of a live workspace | 200 (outside `artifacts/` is readable) |
 | `/file?…&path=../DECISIONS.md`, `artifacts/../../x.html`, `C:/a.html` | 400 `path must be relative to the workspace` |
 | `/file?root=not-absolute` | 400 `root must be absolute` |
-| `/file?…&path=artifacts/zeroshot-test1.wav` | 400 `not html` |
-| `/file?…&path=artifacts/disputed.html` (11 MB) | 413 `file too large`, `size: 11162882`, `limit: 5242880` |
+| `/file?…&path=artifacts/sample-audio.wav` | 400 `not html` |
+| `/file?…&path=artifacts/oversized-sample.html` (11 MB) | 413 `file too large`, reported size above `limit: 5242880` |
 | `/file?…&path=artifacts/nope.html` | 404 `not found` |
 | `/file?root=C:\Windows&path=…` | 403 `root not allowed` |
 
 Client, through the DOM channel (no screenshots):
 
-- the picker offered `AI-Sasha (закрыт)`, `disabled:false`; selecting it listed the
+- the picker offered `sample-workspace (закрыт)`, `disabled:false`; selecting it listed the
   22 artifacts of the closed workspace with workspace-relative paths;
-- clicking `voice-progress.html` opened a **new tab** whose header read
-  `HTML Прогресс голосового конвейера закрыт ▾ artifacts/voice-progress.html` —
+- clicking `sample-report.html` opened a **new tab** whose header read
+  `HTML Пример отчёта закрыт ▾ artifacts/sample-report.html` —
   the mark plus the `<title>` proves the bytes came through `/file`;
 - the same selection inside the **Artifacts page** rendered in place: header
-  `… закрыт 22 ▾`, one 559×684 iframe with the artifact;
-- `disputed.html` produced `Could not read the file / file too large` both in a
+  `… закрыт 22 ▾`, one iframe with the artifact;
+- `oversized-sample.html` produced `Could not read the file / file too large` both in a
   tab and in the page — no blank pane;
 - the channel's `http` probe returned the same 400 body as the direct request.
 
@@ -376,9 +382,9 @@ Two defects were found by that check and fixed before the last round:
   — the option in force is now always kept in the list;
 - the page fetched `/workspaces` once at mount; right after a DSH restart it mounts
   before the session turns live, so it marked the live workspace "закрыт". It now
-  refetches whenever the menu opens. Re-checked: `'' = default-workspace — текущий`,
-  `AI-Sasha (закрыт)`, and selecting the closed one returns `cwd:C:\…\AI-Sasha`.
+  refetches whenever the menu opens. Re-checked: `'' = sample-active-workspace — текущий`,
+  `sample-workspace (закрыт)`, and selecting the closed one returns `cwd:C:\…\sample-workspace`.
 
 Tab-menu regression after those edits: the picker listed the 22 closed artifacts and
-clicking `pipeline-status.html` opened
-`HTML Пайплайн Саши: текущее состояние закрыт ▾ artifacts/pipeline-status.html`.
+clicking `sample-status.html` opened
+`HTML Пример страницы состояния закрыт ▾ artifacts/sample-status.html`.
