@@ -9,7 +9,9 @@
     "selector": 256,
     "timeout": 15000,
     "queue": 32,
-    "heartbeat": 6000
+    "heartbeat": 6000,
+    "deferred": 600000,
+    "grace": 2500
   },
   "tools": [
     {
@@ -28,7 +30,7 @@
     },
     {
       "name": "dsh_artifact_open",
-      "description": "Open an artifact in the right panel without taking system focus.",
+      "description": "Open an artifact in the right panel without taking system focus. A hidden caller session only queues the request (ok, effect none, data.queued true, position, expiresAt) and the tab opens when that session is shown again.",
       "input": {
         "type": "object",
         "properties": {
@@ -79,7 +81,7 @@
     },
     {
       "name": "dsh_artifact_tabs",
-      "description": "Artifact tabs of the current session.",
+      "description": "Artifact tabs of the current session plus requests still queued for it (each row carries pending). A hidden session reports live:false and only its queued requests.",
       "input": {
         "type": "object",
         "properties": {},
@@ -89,7 +91,7 @@
     },
     {
       "name": "dsh_artifact_close",
-      "description": "Close just this artifact tab.",
+      "description": "Close just this artifact tab. A close for a hidden caller session is queued and runs when the session is shown again; there the tab is identified by tabId, so the queued documentId is not required.",
       "input": {
         "type": "object",
         "properties": {
@@ -118,7 +120,7 @@
     },
     {
       "name": "dsh_artifact_navigate",
-      "description": "Scroll or navigate inside an artifact.",
+      "description": "Scroll or navigate inside an artifact. Needs the caller session displayed; a hidden session is refused with SESSION_NOT_VISIBLE because a document cannot be deferred.",
       "input": {
         "type": "object",
         "properties": {
@@ -169,7 +171,7 @@
     },
     {
       "name": "dsh_artifact_query",
-      "description": "Bounded DOM query inside an artifact; secret fields are excluded.",
+      "description": "Bounded DOM query inside an artifact; secret fields are excluded. Needs the caller session displayed; a hidden session is refused with SESSION_NOT_VISIBLE.",
       "input": {
         "type": "object",
         "properties": {
@@ -217,7 +219,7 @@
     },
     {
       "name": "dsh_artifact_act",
-      "description": "Perform an action inside an artifact. Do not repeat an action with an unknown result.",
+      "description": "Perform an action inside an artifact. Do not repeat an action with an unknown result. Needs the caller session displayed; a hidden session is refused with SESSION_NOT_VISIBLE.",
       "input": {
         "type": "object",
         "properties": {
@@ -402,7 +404,7 @@
     },
     {
       "name": "dsh_artifact_wait",
-      "description": "Wait inside an artifact for a bounded time.",
+      "description": "Wait inside an artifact for a bounded time. Needs the caller session displayed; a hidden session is refused with SESSION_NOT_VISIBLE.",
       "input": {
         "type": "object",
         "properties": {
@@ -450,7 +452,7 @@
     },
     {
       "name": "dsh_artifact_screenshot",
-      "description": "Screenshot of the artifact area only; unavailable without a safe provider.",
+      "description": "Screenshot of the artifact area only; unavailable without a safe provider. Needs the caller session displayed.",
       "input": {
         "type": "object",
         "properties": {
@@ -479,7 +481,7 @@
     },
     {
       "name": "dsh_ui_panel_tabs",
-      "description": "Right panel metadata; no terminal contents or unrelated files.",
+      "description": "Right panel metadata; no terminal contents or unrelated files. Needs the caller session displayed.",
       "input": {
         "type": "object",
         "properties": {},
@@ -489,7 +491,7 @@
     },
     {
       "name": "dsh_ui_panel_open",
-      "description": "Open an allowed right-panel tab; never runs terminal commands.",
+      "description": "Open an allowed right-panel tab; never runs terminal commands. kind artifact is queued while the session is hidden; files, browser and terminal need it displayed.",
       "input": {
         "type": "object",
         "properties": {

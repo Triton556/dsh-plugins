@@ -382,3 +382,160 @@ Two defects were found by that check and fixed before the last round:
 Tab-menu regression after those edits: the picker listed the 22 closed artifacts and
 clicking `pipeline-status.html` opened
 `HTML Пайплайн Саши: текущее состояние закрыт ▾ artifacts/pipeline-status.html`.
+
+# Slice 5: an explicitly declared external artifacts root
+
+Status: implemented, unit-tested and probed against the real archive (2026-11-26).
+
+Goal: a workspace may keep `artifacts/` physically outside its directory (for
+example on another volume) while every existing address, tool and tab keeps
+working. The workspace declares the folder; the plugin validates the declaration
+and holds the same boundary.
+
+## Declaration
+
+`<workspace>/.dsh/artifact-panes.json`:
+
+```json
+{ "artifactsRoot": "F:\\Projects\\DestructionStandArchives" }
+```
+
+- Read only when it is a regular file inside the workspace - not a junction, not
+  a symlink - at most 4 KiB, valid JSON with exactly one field.
+- `artifactsRoot` must be an absolute path; it is resolved with `realpath` on
+  every call and must exist and be a directory.
+- Any other shape is `ARTIFACTS_ROOT_INVALID`: an error, never a silent fallback
+  to `<cwd>/artifacts`.
+- A declaration only affects its own workspace.
+
+## Logical address unchanged
+
+`artifactPath()` already requires `artifacts/...`; that stays the logical
+namespace. With a declaration the physical path is
+`<declared root>/<project>/<topic>.html`; without one it remains
+`<cwd>/artifacts/...` under the historical containment rule. The `rel` field the
+picker returns, the tab address and the tool path keep their old values, so no
+stored link or tab identity changes.
+
+## Host
+
+- `tools/artifacts-root.js` is the single resolver: `artifactsScope(cwd)` returns
+  `{ root, base, declared }`, and `physicalArtifact` maps the logical address onto
+  the physical base.
+- `resolveArtifact`, `resolveArtifactLocation` and `listArtifacts`
+  (`tools/host.js`) call it, so there is one rule, not four copies.
+- The list walk starts at the declared base, never steps through a junction
+  inside it (dirent symlink check plus a realpath containment guard), and counts
+  only directories and candidate pages against its scan budget: a 40 000-entry
+  binary archive must not hide the pages behind it.
+- `/library` returns `root` = the physical base and `rel = artifacts/...` for
+  every page. `/file` maps `path=artifacts/...` onto the declared base; any other
+  workspace HTML still resolves inside the workspace root.
+- `<title>` is read only for pages up to 1 MiB: a 100+ MB page is not decoded on
+  every 6 s scan just to label a row.
+- `/workspaces` keeps its response shape; `hasArtifacts` also accepts a valid
+  declaration, so a declared workspace stays selectable while closed.
+
+## Statuses
+
+| Case | Status |
+| --- | --- |
+| undeclared `artifacts/` junction out of the workspace | 403 `outside workspace` |
+| realpath of the file leaves the declared root | 403 `outside workspace` |
+| `..`, absolute path, empty segment | 400 |
+| not html | 400 |
+| over `ARTIFACT_BYTES_LIMIT` (5 MiB) | 413 |
+| invalid declaration file | 500 `artifacts root declaration is invalid` |
+| missing file | 404 |
+
+## Verification (2026-11-26)
+
+- `node --test test/` -> 7/7, including the new `test/external-root.test.mjs`
+  (declaration, junction in and out, traversal, non-HTML, 413, every broken
+  declaration form, `/workspaces` shape).
+- The real archive `F:\Projects\DestructionStandArchives`, through the new code:
+  `resolveArtifact` maps `artifacts/island-gravity-audit-20261126/index.html` to
+  `F:\...\island-gravity-audit-20261126\index.html`; `listArtifacts` returns all
+  8 HTML pages in 197 ms; `/library` returns 24 rows with `rel=artifacts/...`;
+  `/file` for the island page -> 200; for the 123 MB
+  `fracture-steps-20261124/index.html` -> 413.
+
+**The junction still matters for live-session tabs.** A session-scope tab reads
+bytes through `workspaceFiles`, which resolves `artifacts/...` against the
+session cwd, so `<cwd>/artifacts` must exist (it does by the owner's storage
+decision). Tools, `/library` and closed-workspace tabs read through the host and
+need only the declaration. The live check below showed the difference: in a
+workspace without the junction the tab displayed
+`no entry at "artifacts/..."` until a temporary project junction was added.
+
+## Live verification after the DSH restart (2026-11-26, GUI 127.0.0.1:50910)
+
+- `dsh_artifact_list` in a session whose workspace declared the archive:
+  `ok:true`, all 8 HTML pages (`island-gravity-audit-20261126/index.html`
+  included). `truncated:true` comes from the walk's 500-entry budget being
+  filled by 492 directories (9 at level 1, 58 at level 2, 425 at level 3) plus
+  the 8 pages - the `limit` (50) is not the cause, and the archive holds exactly
+  these 8 pages.
+- `dsh_artifact_open artifacts/island-gravity-audit-20261126/index.html`:
+  `ok:true`, `effect:applied`, tab `tab2`, `documentId` observed, `ready:true`.
+  `dsh_artifact_query` on `h1` returned
+  `Почему бочка в башню вешает мир на 175 мс`, so the bytes really rendered.
+- Literal acceptance in the **game-dev session** `session-4ba442fb-…` (the user
+  opened it and ran the three calls): `dsh_artifact_list` -> `ok:true`, the same
+  8 pages; `dsh_artifact_open` -> `ok:true`, `effect:applied`, tab `tab4`,
+  `documentId` `3a95ead4-…`; `dsh_artifact_tabs` -> `tab4`, `ready:true`,
+  `active:true`. This is the case that used to fail with
+  `PATH_OUT_OF_SCOPE: Artifacts root escapes workspace`.
+- `/file` island -> 200 (28420 bytes); the 123 MB page -> 413; `..` -> 400;
+  `.md` -> 400; `/library?root=game-dev` -> 200 with root
+  `F:\Projects\DestructionStandArchives` and 24 rows whose `rel` starts with
+  `artifacts/`; `/workspaces` kept its keys (game-dev was offered as
+  `live:false` with `indexId` after the restart closed its session).
+- Removing the declaration restored the boundary: `/file` -> 403
+  `outside workspace`, `/library` -> `ok:false`; restoring it -> 200 again.
+  The temporary declaration and junction used for this check were removed
+  afterwards, and the external archive was not modified.
+
+## Decisions log (2026-11-26)
+
+- an explicit declaration instead of teaching the plugin to accept any junction:
+  the workspace states the folder, the plugin holds the boundary;
+- the declaration is strict and fails loudly;
+- `rel` stays `artifacts/...` so tab identity and stored links do not change;
+- the knowledge-base note "junction out is a deliberate boundary test" is split,
+  not deleted: no declaration -> 403, declaration -> 200.
+
+## Fix round after the Astra review (2026-11-27)
+
+An independent review (thread `01a21730…`, report
+`.agent-runs/astra-plugin-review-20261126/final.md`) confirmed the acceptance and
+found four problems in this change. Fixed here:
+
+- **Missing `artifacts/` no longer blocks ordinary workspace HTML.** `/file`
+  resolves the workspace root for paths outside `artifacts/` and only asks for
+  the artifacts scope for `artifacts/...`; `/library` treats an absent folder as
+  zero artifact rows and still runs the `outside=1` scan. Before, a workspace
+  with `root-page.html` and no `artifacts/` answered 403 and `ok:false`.
+- **The library walk keeps the boundary.** It skips `symlink` entries, and every
+  candidate page (main and `outside=1` walks) is realpath-checked against the
+  physical artifacts folder or the workspace root before it is listed or its
+  `<title>` is read. A file link pointing outside is neither listed nor read.
+- **A regular file named `artifacts` is refused.** `artifactsScope` requires a
+  directory, so such a workspace is neither served nor advertised by
+  `/workspaces`.
+- **A Windows declaration must be fully qualified.** `path.isAbsolute('/archive')`
+  is true on Windows but names no drive; a drive or UNC path is required.
+- Tests now allocate a unique `DSH_HOME` with `mkdtemp`, so concurrent runs
+  cannot erase each other's fixtures.
+
+Interaction with the deferred-command feature (2026-11-26): that change removed
+`openWithoutClient` in favour of the host-side queue, so the review's finding
+about writing `open-request.json` through an unchecked path no longer applies.
+
+Still open from the review (separate work): the session-tab read path uses
+`workspaceFiles` instead of the host resolver (finding 2, the important one), the
+answer/draft routes resolving the newest session (finding 6, pre-existing),
+`/library` scan cost (finding 10), and the bootstrap/native-host findings.
+
+Live verification after the fixes: pending a DSH restart (host code is read at
+process start). Tests: `node --test test/` = 8/8, manifest hashes match.

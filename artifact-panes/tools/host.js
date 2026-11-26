@@ -1,8 +1,9 @@
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
-import { CATALOG, OUTPUT, authorSchema, checkInput, artifactPath, artifactLocation, result, errorResult, fail } from './contracts.js';
+import { CATALOG, OUTPUT, authorSchema, checkInput, artifactPath, artifactLocation, result, errorResult, fail, deferrable, ToolError } from './contracts.js';
 import { CommandBroker, createBridgeHandler } from './bridge.js';
+import { artifactsScope, physicalArtifact, within } from './artifacts-root.js';
 
 export function callerSession(exec) {
   const session = exec?.agent?.session;
@@ -10,35 +11,46 @@ export function callerSession(exec) {
   return session;
 }
 export const bootstrapRelativePath = sessionId => '.dsh/artifact-panes/tools-v1/' + createHash('sha256').update(sessionId).digest('hex').slice(0, 24) + '.json';
-const within = (base, candidate) => { const relative = path.relative(base, candidate); return relative === '' || !relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative); };
+// The physical base of `artifacts/` comes from the workspace declaration when
+// there is one (tools/artifacts-root.js). `physicalArtifact` keeps the logical
+// address `artifacts/...` unchanged and only moves where it points.
 export async function resolveArtifact(session, value) {
   artifactPath(value);
-  const root = await fs.realpath(session.header.cwd), artifacts = await fs.realpath(path.join(root, 'artifacts'));
-  if (!within(root, artifacts)) fail('PATH_OUT_OF_SCOPE', 'Artifacts root escapes workspace');
-  const resolved = await fs.realpath(path.join(root, value));
-  if (!within(artifacts, resolved) || !(await fs.stat(resolved)).isFile()) fail('PATH_OUT_OF_SCOPE', 'Artifact target escapes its root');
+  const scope = await artifactsScope(session.header.cwd);
+  const resolved = await fs.realpath(physicalArtifact(scope, value));
+  if (!within(scope.base, resolved) || !(await fs.stat(resolved)).isFile()) fail('PATH_OUT_OF_SCOPE', 'Artifact target escapes its root');
   return resolved;
 }
 export async function resolveArtifactLocation(session,value) {
   artifactLocation(value);
-  const root=await fs.realpath(session.header.cwd), base=await fs.realpath(path.join(root,'artifacts')), resolved=await fs.realpath(path.join(root,value));
-  if (!within(root,base)||!within(base,resolved)) fail('PATH_OUT_OF_SCOPE','Panel location escapes artifacts');
+  const scope=await artifactsScope(session.header.cwd), resolved=await fs.realpath(physicalArtifact(scope,value));
+  if(!within(scope.base,resolved)) fail('PATH_OUT_OF_SCOPE','Panel location escapes artifacts');
   const stat=await fs.stat(resolved);if(!stat.isFile()&&!stat.isDirectory())fail('PATH_OUT_OF_SCOPE','Unsupported artifact location');
   return resolved;
 }
 export async function listArtifacts(session, limit = 50) {
-  const root = await fs.realpath(session.header.cwd), base = await fs.realpath(path.join(root, 'artifacts'));
-  if (!within(root, base)) fail('PATH_OUT_OF_SCOPE', 'Artifacts root escapes workspace');
+  const scope = await artifactsScope(session.header.cwd);
   const entries = []; let visited = 0;
+  // `visited` counts directories and candidate pages, not every file: a binary
+  // archive tree must not consume the budget and hide the pages behind it.
   const walk = async (dir, rel, depth) => {
     for (const e of (await fs.readdir(dir, { withFileTypes: true })).sort((a,b) => a.name.localeCompare(b.name))) {
-      if (++visited > 500 || entries.length >= limit) return;
+      if (entries.length >= limit) return;
       if (e.isSymbolicLink() || e.name.startsWith('.')) continue;
-      if (e.isDirectory() && depth < 3) await walk(path.join(dir, e.name), rel + e.name + '/', depth + 1);
-      else if (e.isFile() && /\.(?:html?|xhtml)$/i.test(e.name)) { try { const p = artifactPath('artifacts/' + rel + e.name); await resolveArtifact(session,p); entries.push({ path: p }); } catch {} }
+      if (e.isDirectory()) {
+        if (depth >= 3 || ++visited > 500) continue;
+        const next = path.join(dir, e.name);
+        // A junction inside the declared root must not be stepped through.
+        let real; try { real = await fs.realpath(next); } catch { continue; }
+        if (!within(scope.base, real)) continue;
+        await walk(next, rel + e.name + '/', depth + 1);
+      } else if (e.isFile() && /\.(?:html?|xhtml)$/i.test(e.name)) {
+        if (++visited > 500) return;
+        try { const p = artifactPath('artifacts/' + rel + e.name); const resolved = await fs.realpath(physicalArtifact(scope, p)); if (within(scope.base, resolved) && (await fs.stat(resolved)).isFile()) entries.push({ path: p }); } catch {}
+      }
     }
   };
-  await walk(base, '', 0); return { artifacts: entries, truncated: visited > 500 || entries.length >= limit };
+  await walk(scope.base, '', 0); return { artifacts: entries, truncated: visited > 500 || entries.length >= limit };
 }
 // Private bootstrap is NOT the command/receipt journal. Only DSH's authenticated
 // session workspace remote reads it. Never expose it as a webServer GET route.
@@ -66,35 +78,28 @@ export async function publishScreenshotResult(value, attachments) {
   if (!attachment || typeof attachment.attachmentId !== 'string') fail('CAPTURE_UNAVAILABLE','Attachment store returned no image reference');
   return {...value,data:{...value.data,image:{attachment,width:image.width,height:image.height}}};
 }
-// The artifact tools only exist while the renderer has a mounted artifact tab
-// (the coordinator starts with it). Opening the first tab through the broker is
-// a chicken-and-egg: no tab -> no heartbeat -> CLIENT_STALE. The client already
-// watches this file to open a resource, so an open call may use it as a
-// bootstrap, then wait for the registered tab over the now-live bridge.
-export async function openWithoutClient(session, pathValue, id, broker, timeoutMs = 8000) {
-  const root = await fs.realpath(session.header.cwd);
-  const file = path.join(root, '.dsh','artifact-panes','open-request.json');
-  // The client keeps its own last-seen n in localStorage and ignores anything
-  // not greater. Use a fixed high offset above any epoch-based value so a
-  // fallback still advances after older test/manual requests; the file's n
-  // keeps repeated calls monotonic within the same millisecond.
-  let n = Date.now() + 1_000_000_000_000;
-  try {
-    const previous = JSON.parse(await fs.readFile(file, 'utf8'));
-    if (Number.isFinite(previous?.n)) n = Math.max(n, Number(previous.n) + 1);
-  } catch (e) { /* first request or unreadable stale file */ }
-  await fs.mkdir(path.dirname(file), { recursive: true });
-  await fs.writeFile(file, JSON.stringify({ path: pathValue, note: 'artifact tool fallback', n }, null, 2) + '\n', 'utf8');
-  const until = Date.now() + timeoutMs;
-  while (Date.now() < until) {
-    const tabs = await broker.submit(id, 'dsh_artifact_tabs', {}, { timeoutMs: 1500 });
-    if (tabs.ok) {
-      const hit = (tabs.data?.tabs || []).find(t => t.path === pathValue && typeof t.documentId === 'string' && t.documentId);
-      if (hit) return result({ sessionId: id, tabId: hit.tabId, documentId: hit.documentId, path: pathValue, kind: 'artifact' }, 'applied', { opened: true, via: 'open-request' }, null, null);
-    }
-    await new Promise(resolve => setTimeout(resolve, 250));
-  }
-  return undefined;
+// A hidden caller session has no mounted renderer, so a command that needs the
+// live document cannot run and must not pretend otherwise. The bridge-level
+// CLIENT_STALE reads like a broken channel; this code says what to do instead.
+export function hiddenSession(value, name) {
+  if (!value || value.ok || value.error?.code !== 'CLIENT_STALE') return value;
+  return errorResult(new ToolError('SESSION_NOT_VISIBLE', name + ' needs the caller session displayed; nothing was changed. Show that chat in the DSH window and call again.'), value.context, null);
+}
+// `tabs` answers with the queue even when the renderer is gone: the open tabs of
+// a hidden session are unknown to the host, but its waiting requests are not.
+export async function tabsWithQueue(sessionId, broker, signal) {
+  const pending = broker.rows(sessionId).map(row => ({
+    tabId: row.target?.tabId ?? null, documentId: null, path: row.path, kind: 'artifact',
+    ready: false, active: false, pending: true, request: row.name,
+    commandId: row.commandId, position: row.position, expiresAt: row.expiresAt,
+  }));
+  if (!broker.live(sessionId)) return result({ sessionId }, 'none', { live: false, pending: pending.length, tabs: pending });
+  const value = await broker.submit(sessionId, 'dsh_artifact_tabs', {}, { signal });
+  // The renderer can leave between the check above and the delivery; the queue
+  // is still the honest answer in that race.
+  if (!value.ok) return value.error?.code === 'CLIENT_STALE' ? result({ sessionId }, 'none', { live: false, pending: pending.length, tabs: pending }) : value;
+  const tabs = Array.isArray(value.data?.tabs) ? value.data.tabs.map(tab => ({ ...tab, pending: false })) : [];
+  return { ...value, data: { ...value.data, live: true, pending: pending.length, tabs: [...tabs, ...pending] } };
 }
 export function registerArtifactTools(ctx, { defineTool, origin, host, bootstrapWriter = writeBootstrap, broker = new CommandBroker(), allowedBrowserOrigins = [], attachments = null }) {
   if (typeof defineTool !== 'function' || !ctx.tools?.register || !ctx.webServer?.register) throw new Error('tools, webServer and defineTool are required');
@@ -117,17 +122,13 @@ export function registerArtifactTools(ctx, { defineTool, origin, host, bootstrap
           if (previous && previous !== root) fail('STALE_WORKSPACE', 'Caller workspace changed; reload bridge registration');
           if (!previous) { await bootstrapWriter(session, broker.bind(id)); bootstrapped.set(id,root); }
           if (entry.name === 'dsh_artifact_list') return result({ sessionId: id }, 'none', await listArtifacts(session,args.limit));
+          if (entry.name === 'dsh_artifact_tabs') return await tabsWithQueue(id, broker, exec.signal);
           if (args.path) { if (entry.name==='dsh_ui_panel_open'&&['files','terminal'].includes(args.kind)) await resolveArtifactLocation(session,args.path); else await resolveArtifact(session,args.path); }
-          let value = await broker.submit(id, entry.name, args, { signal: exec.signal });
-          // No mounted artifact tab means no renderer heartbeat. The open tools
-          // can mount the first tab through the client's existing file bridge,
-          // then resume once the tab has registered its frame.
-          if (!value.ok && value.error?.code === 'CLIENT_STALE' && args.path && (entry.name === 'dsh_artifact_open' || entry.name === 'dsh_ui_panel_open' && args.kind === 'artifact')) {
-            try {
-              const opened = await openWithoutClient(session, args.path, id, broker);
-              if (opened) value = opened;
-            } catch (e) { /* fall through to the original CLIENT_STALE */ }
-          }
+          // The path was resolved above, while the caller's workspace is still
+          // authoritative, so a queued request grants no new reach later.
+          const defer = deferrable(entry.name, args);
+          let value = await broker.submit(id, entry.name, args, { signal: exec.signal, defer });
+          if (!defer) value = hiddenSession(value, entry.name);
           if (entry.name !== 'dsh_artifact_screenshot') return value;
           try { return await publishScreenshotResult(value,attachments); }
           catch { return errorResult({code:'CAPTURE_UNAVAILABLE',message:'Artifact image could not be admitted to the native attachment store'},value.context,value.commandId); }

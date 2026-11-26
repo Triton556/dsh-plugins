@@ -8,16 +8,30 @@
 //
 // The tab type, dropdown and renderer live in ./client.js.
 import { mkdir, writeFile, readFile, readdir, unlink, stat, realpath } from 'node:fs/promises'
-import { writeFileSync } from 'node:fs'
+import { writeFileSync, mkdirSync } from 'node:fs'
 import { appendFileSync } from 'node:fs'
 import { execFile } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { relative, resolve, join, isAbsolute } from 'node:path'
+import { artifactsScope, logicalArtifact, within } from './tools/artifacts-root.js'
 
-const bootLog = 'C:/Users/Danil/Documents/deepseek-harness/default-workspace/tools/codex-worker/evidence/tools-v1/host-load.log'
-const dividerDiagLog = 'C:/Users/Danil/Documents/deepseek-harness/default-workspace/tools/codex-worker/evidence/tools-v1/divider-diag.log'
+// Diagnostic sinks belong to the profile, not to a source checkout: another
+// machine has no C:/Users/Danil path, and a missing log directory must never make
+// the plugin fail. With DSH_HOME unset the plugin simply logs nowhere.
+const dshHomePath = (() => {
+  const value = process.env.DSH_HOME
+  return typeof value === 'string' && value ? value.replace(/[\\/]+$/, '') : ''
+})()
+const logDir = dshHomePath ? dshHomePath + '/.dsh/artifact-panes' : ''
+const bootLog = logDir ? logDir + '/host-load.log' : ''
+const dividerDiagLog = logDir ? logDir + '/divider-diag.log' : ''
 const dividerAuthFile = process.env.TEMP + '/dsh-gui-auth.json'
+if (logDir) {
+  try { mkdirSync(logDir, { recursive: true }) } catch (error) { console.error('[artifact-panes:host-load] log-dir-failed', error?.code || 'UNKNOWN') }
+}
+
 function boot(event, data = {}) {
+  if (!bootLog) return
   const record = { time: new Date().toISOString(), pid: process.pid, event, module: import.meta.url, ...data }
   try { appendFileSync(bootLog, JSON.stringify(record) + '\n') }
   catch (error) { console.error('[artifact-panes:host-load]', event, 'log-write-failed', error?.code || 'UNKNOWN') }
@@ -32,6 +46,9 @@ export const inject = ['webServer']
 // workspace, capped so one page cannot pin megabytes of base64 in the answer.
 const ARTIFACT_BYTES_LIMIT = 5 * 1024 * 1024
 const ARTIFACT_EXT = /\.(?:html?|xhtml)$/i
+// A list row only needs the `<title>`; a 100+ MB page must not be decoded on
+// every scan just to label it (the page itself is still capped below).
+const TITLE_BYTES_LIMIT = 1024 * 1024
 
 // One spelling for comparing workspace paths: forward slashes, no trailing
 // separator, case-folded (Windows paths are case-insensitive).
@@ -58,12 +75,12 @@ const nodeIo = {
       } catch (e) {
         // A drained entry or an unreadable name: still list it, like the
         // service does, so the list never hides a race.
-        out.push({ name: entry.name, type: entry.isDirectory() ? 'directory' : 'file', target: { targetKey: wsKey(full), path: full }, version: '0:0:0:0:0', size: 0 })
+        out.push({ name: entry.name, type: entry.isSymbolicLink() ? 'symlink' : entry.isDirectory() ? 'directory' : 'file', target: { targetKey: wsKey(full), path: full }, version: '0:0:0:0:0', size: 0 })
         continue
       }
       out.push({
         name: entry.name,
-        type: entry.isDirectory() ? 'directory' : 'file',
+        type: entry.isSymbolicLink() ? 'symlink' : entry.isDirectory() ? 'directory' : 'file',
         target: { targetKey: wsKey(full), path: full },
         version: versionOf(info),
         size: Number(info.size),
@@ -105,11 +122,13 @@ export function apply(ctx) {
   const abs = (root, rel) => String(root).replace(/[\\/]+$/, '') + '/' + rel
 
   // Every cwd the persisted session index remembers. A session that is not
-  // live still names a workspace; this is what makes it readable.
+  // live still names a workspace; this is what makes it readable. Without
+  // DSH_HOME there is no index to read: closed workspaces are simply not offered.
   async function closedWorkspaceRecords() {
     const records = []
+    const home = process.env.DSH_HOME
+    if (typeof home !== 'string' || !home) return records
     try {
-      const home = process.env.DSH_HOME || 'F:/DeepSeek-Harness/data'
       const dir = home.replace(/[\\/]+$/, '') + '/storages/session_projcache/sessions'
       for (const name of await readdir(dir)) {
         if (!name.endsWith('.json')) continue
@@ -194,9 +213,9 @@ export function apply(ctx) {
     return undefined
   }
 
-  // Workspaces the picker can switch to: the distinct cwds of live sessions.
-  // A workspace without a live session cannot be read (the client reads bytes
-  // through a session id), so it is not offered at all.
+  // Workspaces the picker can switch to: the cwds of live sessions, plus the
+  // cwds the closed-session index remembers when they have an artifacts folder
+  // (the /file route reads those by path, so no session id is needed).
   ctx.effect(() => webServer.register({
     kind: 'exact',
     path: '/artifact-panes/workspaces',
@@ -205,15 +224,12 @@ export function apply(ctx) {
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
         res.end(JSON.stringify(payload))
       }
-      const fs = ctx.get('fs')
       const norm = (cwd) => String(cwd || '').replace(/[\\/]+$/, '').replace(/\\/g, '/')
       const labelOf = (cwd) => norm(cwd).split('/').filter(Boolean).pop() || norm(cwd)
       const hasArtifactsDir = async (cwd) => {
-        try {
-          if (!fs || typeof fs.stat !== 'function') return false
-          const info = await fs.stat(await fs.resolve(norm(cwd) + '/artifacts'))
-          return !!(info && info.type === 'directory')
-        } catch (e) { return false }
+        // Only a validated scope counts: a local folder shadowed by a broken
+        // declaration, or a regular file named `artifacts`, cannot be served.
+        try { await artifactsScope(cwd); return true } catch (e) { return false }
       }
       const known = await knownWorkspaces()
       const workspaces = []
@@ -320,6 +336,27 @@ export function apply(ctx) {
       }
       if (!root) { send({ ok: false, artifacts: [], error: 'workspace not resolved' }); return }
       if (!io || typeof io.listDir !== 'function') { send({ ok: false, artifacts: [], error: 'filesystem unavailable' }); return }
+      // The physical folder that logical `artifacts/` stands for: the root the
+      // workspace declared, or `<root>/artifacts` under the historical rule.
+      // A broken declaration is reported, never silently replaced; a workspace
+      // without any artifacts folder still lists the HTML outside it.
+      let scope = null
+      try {
+        scope = await artifactsScope(root)
+      } catch (error) {
+        const code = error && error.code
+        if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+          const text = code === 'PATH_OUT_OF_SCOPE'
+            ? (/not a directory/i.test(String(error.message || '')) ? 'artifacts root is not a directory' : 'artifacts root escapes workspace')
+            : code === 'ARTIFACTS_ROOT_INVALID' ? 'artifacts root declaration is invalid'
+            : 'artifacts root is unavailable'
+          send({ ok: false, artifacts: [], error: text })
+          return
+        }
+      }
+      const artifactsDir = scope ? (scope.declared ? scope.base : abs(root, 'artifacts')) : null
+      let workspaceReal = root
+      try { workspaceReal = await realpath(root) } catch (e) {}
       // The walk below is written against the `fs` face; the adapter is the
       // sandboxed service for a live session and plain node:fs for a root.
       const fs = io
@@ -351,11 +388,17 @@ export function apply(ctx) {
         for (const entry of entries) {
           if (artifacts.length >= 150) return
           if (!entry || !entry.name || entry.name.startsWith('.')) continue
+          if (entry.type === 'symlink') continue
           if (entry.type === 'directory') { await walk(dirPath + '/' + entry.name, depth + 1); continue }
           if (!wanted.test(entry.name)) continue
           const filePath = dirPath + '/' + entry.name
+          // Only a canonical path inside the physical folder may be listed or
+          // have its <title> read; a link that leaves it is skipped.
+          let canonical
+          try { canonical = await realpath(typeof fs.processPath === 'function' ? fs.processPath(entry.target) : filePath) } catch (e) { continue }
+          if (!within(scope.base, canonical)) continue
           let title = ''
-          if (/\.(?:html?|xhtml)$/i.test(entry.name)) {
+          if (/\.(?:html?|xhtml)$/i.test(entry.name) && (!entry.size || entry.size <= TITLE_BYTES_LIMIT)) {
             const cacheKey = entry.target && entry.target.targetKey ? entry.target.targetKey : filePath
             const cached = titleCache.get(cacheKey)
             if (cached && cached.version === entry.version) {
@@ -378,7 +421,7 @@ export function apply(ctx) {
         }
       }
       try {
-        await walk(abs(root, 'artifacts'), 0)
+        if (artifactsDir) await walk(artifactsDir, 0)
         if (includeOutside) {
           // Recent HTML outside artifacts/: the user opted in for this. Strictly
           // bounded - 30 days, 50 files, depth 3, no build/agent folders.
@@ -387,6 +430,7 @@ export function apply(ctx) {
           const seen = new Set(artifacts.map((item) => item.path))
           const extra = []
           const titleOf = async (entry, filePath) => {
+            if (entry.size && entry.size > TITLE_BYTES_LIMIT) return ''
             try {
               const text = await fs.readText(entry.target)
               const m = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(String(text || '').slice(0, 200000))
@@ -402,6 +446,7 @@ export function apply(ctx) {
             for (const entry of entries) {
               if (extra.length >= 50) return
               if (!entry || !entry.name) continue
+              if (entry.type === 'symlink') continue
               if (entry.type === 'directory') {
                 if (entry.name.startsWith('.') || skipDirs.has(entry.name) || entry.name === 'artifacts') continue
                 await walkOutside(dirPath + '/' + entry.name, depth + 1)
@@ -413,6 +458,9 @@ export function apply(ctx) {
               const filePath = dirPath + '/' + entry.name
               const outPath = typeof fs.processPath === 'function' ? fs.processPath(entry.target) : filePath
               if (seen.has(outPath)) continue
+              let canonical
+              try { canonical = await realpath(outPath) } catch (e) { continue }
+              if (!within(workspaceReal, canonical)) continue
               seen.add(outPath)
               extra.push({ path: outPath, title: await titleOf(entry, filePath), size: entry.size || 0, mtime, outside: true })
             }
@@ -421,16 +469,18 @@ export function apply(ctx) {
           artifacts.push(...extra)
         }
         artifacts.sort((a, b) => (b.mtime || 0) - (a.mtime || 0) || a.path.localeCompare(b.path))
-        // Workspace-relative address for every entry: opening a tab by an
-        // absolute path produced absolute headers and broke tab de-duplication.
+        // One address for every entry: an artifact keeps its logical
+        // `artifacts/...` form even when its physical base is external, because
+        // tab identity and de-duplication are built from it.
         const wsBase = String(root).replace(/\\/g, '/').replace(/\/+$/, '')
         for (const item of artifacts) {
           const normalized = String(item.path).replace(/\\/g, '/')
-          item.rel = normalized.toLowerCase().startsWith(wsBase.toLowerCase() + '/')
+          const logical = scope ? logicalArtifact(scope, item.path) : undefined
+          item.rel = logical || (normalized.toLowerCase().startsWith(wsBase.toLowerCase() + '/')
             ? normalized.slice(wsBase.length + 1)
-            : normalized
+            : normalized)
         }
-        send({ ok: true, root: root + '/artifacts', outside: includeOutside, artifacts, errors })
+        send({ ok: true, root: artifactsDir || abs(root, 'artifacts'), outside: includeOutside, artifacts, errors })
       } catch (e) {
         send({ ok: false, artifacts: [], root, error: e && e.message ? String(e.message) : 'library scan failed', errors })
       }
@@ -471,25 +521,38 @@ export function apply(ctx) {
       if (!ARTIFACT_EXT.test(relPath)) { send(400, { ok: false, error: 'not html' }); return }
       const entry = await knownWorkspace(rawRoot)
       if (!entry) { send(403, { ok: false, error: 'root not allowed' }); return }
+      // Logical `artifacts/...` names the physical folder its workspace declared
+      // (or its own `artifacts/`, confined exactly as before). Any other
+      // workspace HTML reads inside the workspace root and needs no artifacts
+      // folder at all: an ordinary workspace may have none.
+      const underArtifacts = relPath.startsWith('artifacts/')
+      let scope = null
       let rootReal
-      try {
-        rootReal = await realpath(resolve(entry.cwd))
-      } catch (e) {
-        send(404, { ok: false, error: 'workspace not found' })
-        return
+      if (underArtifacts) {
+        try {
+          scope = await artifactsScope(entry.cwd)
+        } catch (e) {
+          if (e && e.code === 'CALLER_UNAVAILABLE') { send(404, { ok: false, error: 'workspace not found' }); return }
+          if (e && e.code === 'ARTIFACTS_ROOT_INVALID') { send(500, { ok: false, error: 'artifacts root declaration is invalid' }); return }
+          if (e && e.code === 'PATH_OUT_OF_SCOPE') { send(403, { ok: false, error: 'outside workspace' }); return }
+          send(404, { ok: false, error: 'not found' }); return
+        }
+        rootReal = scope.root
+      } else {
+        try { rootReal = await realpath(entry.cwd) } catch (e) { send(404, { ok: false, error: 'workspace not found' }); return }
       }
+      const base = underArtifacts ? scope.base : rootReal
+      const candidate = underArtifacts ? join(scope.base, ...relPath.split('/').slice(1)) : resolve(rootReal, relPath)
       let fileReal
       try {
-        fileReal = await realpath(resolve(rootReal, relPath))
+        fileReal = await realpath(candidate)
       } catch (e) {
         send(404, { ok: false, error: 'not found' })
         return
       }
-      // Containment on the real path: a symlink inside the workspace that points
-      // somewhere else resolves to its target and is refused.
-      const rootKey = wsKey(rootReal)
-      const fileKey = wsKey(fileReal)
-      if (fileKey !== rootKey && !fileKey.startsWith(rootKey + '/')) {
+      // Containment on the real path: a symlink or junction that points
+      // anywhere else resolves to its target and is refused.
+      if (!within(base, fileReal)) {
         send(403, { ok: false, error: 'outside workspace' })
         return
       }
@@ -772,7 +835,9 @@ export function apply(ctx) {
         if (size > 64 * 1024) { sendJson(res, 413, { ok: false, error: 'payload is too large' }); return }
         chunks.push(chunk)
       }
-      try { appendFileSync(dividerDiagLog, Buffer.concat(chunks).toString('utf8').trim() + '\n') } catch (e) {}
+      if (dividerDiagLog) {
+        try { appendFileSync(dividerDiagLog, Buffer.concat(chunks).toString('utf8').trim() + '\n') } catch (e) {}
+      }
       sendJson(res, 200, { ok: true })
     },
   }), 'artifact-panes: divider diag')

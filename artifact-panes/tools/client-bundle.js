@@ -3,7 +3,7 @@
 "use strict";
 // Staged v1. Pure, inert on import. No model-supplied session/workspace authority.
 const VERSION = 1;
-const LIMITS = Object.freeze({ bytes: 65536, captureBytes: 1500000, inputBytes: 16384, text: 4096, nodes: 50, selector: 256, timeout: 15000, queue: 32, heartbeat: 6000 });
+const LIMITS = Object.freeze({ bytes: 65536, captureBytes: 1500000, inputBytes: 16384, text: 4096, nodes: 50, selector: 256, timeout: 15000, queue: 32, heartbeat: 6000, deferred: 600000, grace: 2500 });
 class ToolError extends Error {
   constructor(code, message, effect = 'none') { super(message); this.code = code; this.effect = effect; }
 }
@@ -26,18 +26,23 @@ const action = { oneOf: [
 const spec = (name, description, properties, required = []) => ({ name: 'dsh_' + name, description, input: object(properties, required) });
 const CATALOG = [
   spec('artifact_list', 'List HTML artifacts of the current session.', { limit: n }),
-  spec('artifact_open', 'Open an artifact in the right panel without taking system focus.', { path: s, placement: en('current', 'new'), reload: b, focus: b, ...move.properties }, ['path']),
-  spec('artifact_tabs', 'Artifact tabs of the current session.', {}),
-  spec('artifact_close', 'Close just this artifact tab.', { target }, ['target']),
-  spec('artifact_navigate', 'Scroll or navigate inside an artifact.', { target, ...move.properties }, ['target']),
-  spec('artifact_query', 'Bounded DOM query inside an artifact; secret fields are excluded.', { target, selector: s, fields: { type: 'array', items: en('text', 'attrs', 'rect', 'style') }, limit: n }, ['target', 'selector']),
-  spec('artifact_act', 'Perform an action inside an artifact. Do not repeat an action with an unknown result.', { target, action }, ['target', 'action']),
-  spec('artifact_wait', 'Wait inside an artifact for a bounded time.', { target, selector: s, text: s, state: en('present', 'absent'), timeMs: n, timeoutMs: n }, ['target']),
-  spec('artifact_screenshot', 'Screenshot of the artifact area only; unavailable without a safe provider.', { target }, ['target']),
-  spec('ui_panel_tabs', 'Right panel metadata; no terminal contents or unrelated files.', {}),
-  spec('ui_panel_open', 'Open an allowed right-panel tab; never runs terminal commands.', { kind: en('artifact', 'files', 'browser', 'terminal'), path: s, url: s, focus: b }, ['kind'])
+  spec('artifact_open', 'Open an artifact in the right panel without taking system focus. A hidden caller session only queues the request (ok, effect none, data.queued true, position, expiresAt) and the tab opens when that session is shown again.', { path: s, placement: en('current', 'new'), reload: b, focus: b, ...move.properties }, ['path']),
+  spec('artifact_tabs', 'Artifact tabs of the current session plus requests still queued for it (each row carries pending). A hidden session reports live:false and only its queued requests.', {}),
+  spec('artifact_close', 'Close just this artifact tab. A close for a hidden caller session is queued and runs when the session is shown again; there the tab is identified by tabId, so the queued documentId is not required.', { target }, ['target']),
+  spec('artifact_navigate', 'Scroll or navigate inside an artifact. Needs the caller session displayed; a hidden session is refused with SESSION_NOT_VISIBLE because a document cannot be deferred.', { target, ...move.properties }, ['target']),
+  spec('artifact_query', 'Bounded DOM query inside an artifact; secret fields are excluded. Needs the caller session displayed; a hidden session is refused with SESSION_NOT_VISIBLE.', { target, selector: s, fields: { type: 'array', items: en('text', 'attrs', 'rect', 'style') }, limit: n }, ['target', 'selector']),
+  spec('artifact_act', 'Perform an action inside an artifact. Do not repeat an action with an unknown result. Needs the caller session displayed; a hidden session is refused with SESSION_NOT_VISIBLE.', { target, action }, ['target', 'action']),
+  spec('artifact_wait', 'Wait inside an artifact for a bounded time. Needs the caller session displayed; a hidden session is refused with SESSION_NOT_VISIBLE.', { target, selector: s, text: s, state: en('present', 'absent'), timeMs: n, timeoutMs: n }, ['target']),
+  spec('artifact_screenshot', 'Screenshot of the artifact area only; unavailable without a safe provider. Needs the caller session displayed.', { target }, ['target']),
+  spec('ui_panel_tabs', 'Right panel metadata; no terminal contents or unrelated files. Needs the caller session displayed.', {}),
+  spec('ui_panel_open', 'Open an allowed right-panel tab; never runs terminal commands. kind artifact is queued while the session is hidden; files, browser and terminal need it displayed.', { kind: en('artifact', 'files', 'browser', 'terminal'), path: s, url: s, focus: b }, ['kind'])
 ];
 const MUTATING = new Set(CATALOG.filter(x => !/_(list|tabs|query|wait|screenshot)$/.test(x.name)).map(x => x.name));
+// Commands whose intent outlives the hidden renderer: they name an artifact path
+// or a tab id, never a live document. Everything else needs the mounted client
+// and is refused fast, because postponing it would be a lie about the document.
+const DEFERRED = new Set(['dsh_artifact_open', 'dsh_artifact_close']);
+const deferrable = (name, args) => DEFERRED.has(name) || (name === 'dsh_ui_panel_open' && args?.kind === 'artifact');
 function validate(schema, value, at = 'input') {
   if (schema.oneOf) {
     const matches = schema.oneOf.filter(x => { try { validate(x, value, at); return true; } catch { return false; } });
@@ -192,6 +197,19 @@ function createPanelAdapter({ sidebar, frames, mountedSession, readTabs, provide
         const tabs = (await readTabs(sessionId)).slice(0,50).map(t => ({tabId:t.id,kind:['artifact','files','browser','terminal'].includes(t.safeKind)?t.safeKind:'other',active:t.active === true}));
         return result({sessionId,kind:'panel'},'none',{tabs},null,cmd.id);
       }
+      if (cmd.name === 'dsh_artifact_close' && cmd.deferred === true) {
+        // Queued while this session had no renderer. The document lease from
+        // that moment is gone by design, so the durable tab id decides; the
+        // native panel can close a tab whose iframe was not re-mounted yet.
+        const tabId = a.target.tabId, frame = frames.frames.get(tabId), rows = await readTabs(sessionId);
+        const mounted = !!frame && frame.sessionId === sessionId && frame.iframe.isConnected;
+        if (!rows.some(t => t.id === tabId) && !mounted) fail('TAB_CLOSED', 'Artifact tab is not open in this session');
+        issued = true; sidebar.close(tabId);
+        const stillOpen = (await readTabs(sessionId)).some(t => t.id === tabId);
+        if (stillOpen) { issued = false; fail('CLOSE_REFUSED','Native panel retained the tab'); }
+        frames.detach(tabId);
+        return result({ sessionId, tabId, documentId: mounted ? frame.documentId : a.target.documentId }, 'applied', { closed: true, queuedBeforeMount: true }, null, cmd.id);
+      }
       if (cmd.name === 'dsh_artifact_close') {
         const e = frames.target(sessionId,a.target);
         issued = true; sidebar.close(e.tabId);
@@ -261,13 +279,14 @@ function createChannel(fetch, endpoint, capability, instance) {
   };
 }
 function startClient({ sessionId, readBootstrap, adapter, fetch, endpoint = '/artifact-panes/tools-v1/channel', crypto, onStatus = () => {} }) {
-  const abort = new AbortController(), instance = crypto.randomUUID(); let channel, busy = false, stopped = false;
+  const abort = new AbortController(), instance = crypto.randomUUID(); let channel, capability, busy = false, stopped = false;
   const tick = async () => {
     if (stopped || busy) return; busy = true;
     try {
       if (!channel) {
         const c = await readBootstrap(sessionId,abort.signal);
         if (c.version !== VERSION || c.sessionId !== sessionId || typeof c.token !== 'string' || typeof c.clientId !== 'string') fail('UNAUTHORIZED','Bootstrap identity mismatch');
+        capability = c;
         channel = createChannel(fetch,endpoint,c,instance);
       }
       const cmd = await channel('poll',{},abort.signal);
@@ -294,8 +313,17 @@ function startClient({ sessionId, readBootstrap, adapter, fetch, endpoint = '/ar
   };
   const pollTimer = setInterval(tick,300);
   const heartbeat = setInterval(() => { if (channel && !stopped) channel('heartbeat',{},abort.signal).catch(e=>onStatus({state:'error',code:e.code || 'BRIDGE_UNAVAILABLE',sessionId})); },1500);
+  // Unmounting the session (the user switched chats) is a fact the host needs
+  // now, not after the heartbeat expires. Best effort: the deadline still guards
+  // a lost beacon, and a queued deferrable command keeps its intent either way.
+  const detach = () => {
+    if (!capability) return;
+    try {
+      fetch(endpoint,{method:'POST',mode:'same-origin',credentials:'same-origin',cache:'no-store',keepalive:true,headers:{'Content-Type':'application/json',Authorization:'Bearer '+capability.token},body:JSON.stringify({op:'bye',sessionId:capability.sessionId,clientId:capability.clientId,instance})}).catch?.(()=>{});
+    } catch (e) { /* an unloading page may refuse the request */ }
+  };
   tick();
-  return { stop() { stopped = true; clearInterval(pollTimer); clearInterval(heartbeat); abort.abort(); }, tick };
+  return { stop() { stopped = true; clearInterval(pollTimer); clearInterval(heartbeat); detach(); abort.abort(); }, tick };
 }
 
 async function readWorkspaceBootstrap(ctx, sessionId, signal) {

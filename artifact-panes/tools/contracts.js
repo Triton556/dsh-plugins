@@ -1,6 +1,6 @@
 // Staged v1. Pure, inert on import. No model-supplied session/workspace authority.
 export const VERSION = 1;
-export const LIMITS = Object.freeze({ bytes: 65536, captureBytes: 1500000, inputBytes: 16384, text: 4096, nodes: 50, selector: 256, timeout: 15000, queue: 32, heartbeat: 6000 });
+export const LIMITS = Object.freeze({ bytes: 65536, captureBytes: 1500000, inputBytes: 16384, text: 4096, nodes: 50, selector: 256, timeout: 15000, queue: 32, heartbeat: 6000, deferred: 600000, grace: 2500 });
 export class ToolError extends Error {
   constructor(code, message, effect = 'none') { super(message); this.code = code; this.effect = effect; }
 }
@@ -23,18 +23,23 @@ const action = { oneOf: [
 const spec = (name, description, properties, required = []) => ({ name: 'dsh_' + name, description, input: object(properties, required) });
 export const CATALOG = [
   spec('artifact_list', 'List HTML artifacts of the current session.', { limit: n }),
-  spec('artifact_open', 'Open an artifact in the right panel without taking system focus.', { path: s, placement: en('current', 'new'), reload: b, focus: b, ...move.properties }, ['path']),
-  spec('artifact_tabs', 'Artifact tabs of the current session.', {}),
-  spec('artifact_close', 'Close just this artifact tab.', { target }, ['target']),
-  spec('artifact_navigate', 'Scroll or navigate inside an artifact.', { target, ...move.properties }, ['target']),
-  spec('artifact_query', 'Bounded DOM query inside an artifact; secret fields are excluded.', { target, selector: s, fields: { type: 'array', items: en('text', 'attrs', 'rect', 'style') }, limit: n }, ['target', 'selector']),
-  spec('artifact_act', 'Perform an action inside an artifact. Do not repeat an action with an unknown result.', { target, action }, ['target', 'action']),
-  spec('artifact_wait', 'Wait inside an artifact for a bounded time.', { target, selector: s, text: s, state: en('present', 'absent'), timeMs: n, timeoutMs: n }, ['target']),
-  spec('artifact_screenshot', 'Screenshot of the artifact area only; unavailable without a safe provider.', { target }, ['target']),
-  spec('ui_panel_tabs', 'Right panel metadata; no terminal contents or unrelated files.', {}),
-  spec('ui_panel_open', 'Open an allowed right-panel tab; never runs terminal commands.', { kind: en('artifact', 'files', 'browser', 'terminal'), path: s, url: s, focus: b }, ['kind'])
+  spec('artifact_open', 'Open an artifact in the right panel without taking system focus. A hidden caller session only queues the request (ok, effect none, data.queued true, position, expiresAt) and the tab opens when that session is shown again.', { path: s, placement: en('current', 'new'), reload: b, focus: b, ...move.properties }, ['path']),
+  spec('artifact_tabs', 'Artifact tabs of the current session plus requests still queued for it (each row carries pending). A hidden session reports live:false and only its queued requests.', {}),
+  spec('artifact_close', 'Close just this artifact tab. A close for a hidden caller session is queued and runs when the session is shown again; there the tab is identified by tabId, so the queued documentId is not required.', { target }, ['target']),
+  spec('artifact_navigate', 'Scroll or navigate inside an artifact. Needs the caller session displayed; a hidden session is refused with SESSION_NOT_VISIBLE because a document cannot be deferred.', { target, ...move.properties }, ['target']),
+  spec('artifact_query', 'Bounded DOM query inside an artifact; secret fields are excluded. Needs the caller session displayed; a hidden session is refused with SESSION_NOT_VISIBLE.', { target, selector: s, fields: { type: 'array', items: en('text', 'attrs', 'rect', 'style') }, limit: n }, ['target', 'selector']),
+  spec('artifact_act', 'Perform an action inside an artifact. Do not repeat an action with an unknown result. Needs the caller session displayed; a hidden session is refused with SESSION_NOT_VISIBLE.', { target, action }, ['target', 'action']),
+  spec('artifact_wait', 'Wait inside an artifact for a bounded time. Needs the caller session displayed; a hidden session is refused with SESSION_NOT_VISIBLE.', { target, selector: s, text: s, state: en('present', 'absent'), timeMs: n, timeoutMs: n }, ['target']),
+  spec('artifact_screenshot', 'Screenshot of the artifact area only; unavailable without a safe provider. Needs the caller session displayed.', { target }, ['target']),
+  spec('ui_panel_tabs', 'Right panel metadata; no terminal contents or unrelated files. Needs the caller session displayed.', {}),
+  spec('ui_panel_open', 'Open an allowed right-panel tab; never runs terminal commands. kind artifact is queued while the session is hidden; files, browser and terminal need it displayed.', { kind: en('artifact', 'files', 'browser', 'terminal'), path: s, url: s, focus: b }, ['kind'])
 ];
 export const MUTATING = new Set(CATALOG.filter(x => !/_(list|tabs|query|wait|screenshot)$/.test(x.name)).map(x => x.name));
+// Commands whose intent outlives the hidden renderer: they name an artifact path
+// or a tab id, never a live document. Everything else needs the mounted client
+// and is refused fast, because postponing it would be a lie about the document.
+export const DEFERRED = new Set(['dsh_artifact_open', 'dsh_artifact_close']);
+export const deferrable = (name, args) => DEFERRED.has(name) || (name === 'dsh_ui_panel_open' && args?.kind === 'artifact');
 export function validate(schema, value, at = 'input') {
   if (schema.oneOf) {
     const matches = schema.oneOf.filter(x => { try { validate(x, value, at); return true; } catch { return false; } });

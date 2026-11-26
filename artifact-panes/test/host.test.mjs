@@ -7,14 +7,11 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 // Isolate from the real session index: only the live sessions below exist here.
-process.env.DSH_HOME = path.join(tmpdir(), 'artifact-panes-no-dsh-home');
+// A unique directory per run, so concurrent or failed runs cannot erase each
+// other's fixtures.
+process.env.DSH_HOME = await mkdtemp(path.join(tmpdir(), 'artifact-panes-no-dsh-home-'));
 const { apply } = await import('../index.js');
 assert.equal(typeof apply, 'function');
-
-// A previous failed run can leave a fixture session index behind; every run
-// starts from an empty one, or the closed-workspace fixtures would leak into the
-// live-only assertions above them.
-await rm(process.env.DSH_HOME, { recursive: true, force: true });
 
 const root = await mkdtemp(path.join(tmpdir(), 'artifact-panes-test-'));
 await mkdir(path.join(root, 'artifacts'), { recursive: true });

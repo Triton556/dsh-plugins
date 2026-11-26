@@ -3,18 +3,23 @@
   "files": [
     {
       "name": "contracts.js",
-      "bytes": 11024,
-      "sha256": "aa450e606e9477a1813efb9985c4f46624e373936df44e5fe57f16c539191c33"
+      "bytes": 12523,
+      "sha256": "205fde9ed6a967fecf054a58e189fbb846f2dbed53c93b319c29317259346748"
+    },
+    {
+      "name": "artifacts-root.js",
+      "bytes": 5831,
+      "sha256": "a654ce8d2527d506b63274489712330e3c2cc0997f21b545acff14fa6cf0a641"
     },
     {
       "name": "bridge.js",
-      "bytes": 9054,
-      "sha256": "5c6aff2a504d7ae6b8423efb2b6c790a1dacfa009068b8406cebf3b5d50affb4"
+      "bytes": 14521,
+      "sha256": "4d094616c08a05268f6dbf497c2f07c0f857cf6e30f402c18c6af706e21bb539"
     },
     {
       "name": "host.js",
-      "bytes": 10691,
-      "sha256": "63deec4b408352228e89eeb92920d3d62589d39fa4195cfaa967a6e019a94cb6"
+      "bytes": 10667,
+      "sha256": "22a55d7b754aedc57f6deed671f77a79af314abe3473e583b5382fd3c74355c2"
     },
     {
       "name": "iframe.js",
@@ -23,8 +28,8 @@
     },
     {
       "name": "client.js",
-      "bytes": 17637,
-      "sha256": "36530105ee3693ba2c41080b502aaf61c0a51f13f392a6e8a4bef86ee92b7faf"
+      "bytes": 19441,
+      "sha256": "73cd97bd51b82b9207dc04040cf130bcd3c9f983a67fad4dedd98c028b0b08ca"
     },
     {
       "name": "capture.js",
@@ -38,23 +43,23 @@
     },
     {
       "name": "iframe-dispatcher.js",
-      "bytes": 24200,
-      "sha256": "abde770e252efe8a730235c85561a0b06ad66ae043526c4b3018efdb5671ec69"
+      "bytes": 25685,
+      "sha256": "45261d8afbe250284461321806a9c8aadcaea9981f7e20084acfe64cfc5f5fc5"
     },
     {
       "name": "client-bundle.js",
-      "bytes": 33240,
-      "sha256": "f2f183e6eb7b0e68cf44c552bf8c90a9bb1c24a8770cef477cca8e4391fe75a4"
+      "bytes": 36529,
+      "sha256": "c97f3d3b1af83c959415f2d034fca729d391552d58ce76c71378faa0cf36fead"
     },
     {
       "name": "integration-fragments.txt",
-      "bytes": 57833,
-      "sha256": "37ad2574ba3c641888611a2c2c74d92549de64debf0609dc9c0ca345d8f9dd75"
+      "bytes": 62612,
+      "sha256": "da02be921abc0f0ee1bcd22bce5bae2564b2f0bca7ee010de01b533756ddd19f"
     },
     {
       "name": "tool-schemas.json",
-      "bytes": 15168,
-      "sha256": "388e0854379d7a7f44f36b1efebc069800f886bf7cfb3aaee7e2a207fd5b4902"
+      "bytes": 16233,
+      "sha256": "00c41fd2440bdea2139cc52480ac8e71ab35dc4122a34528b3f1fae49a226dba"
     }
   ]
 }

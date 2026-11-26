@@ -82,6 +82,19 @@ export function createPanelAdapter({ sidebar, frames, mountedSession, readTabs, 
         const tabs = (await readTabs(sessionId)).slice(0,50).map(t => ({tabId:t.id,kind:['artifact','files','browser','terminal'].includes(t.safeKind)?t.safeKind:'other',active:t.active === true}));
         return result({sessionId,kind:'panel'},'none',{tabs},null,cmd.id);
       }
+      if (cmd.name === 'dsh_artifact_close' && cmd.deferred === true) {
+        // Queued while this session had no renderer. The document lease from
+        // that moment is gone by design, so the durable tab id decides; the
+        // native panel can close a tab whose iframe was not re-mounted yet.
+        const tabId = a.target.tabId, frame = frames.frames.get(tabId), rows = await readTabs(sessionId);
+        const mounted = !!frame && frame.sessionId === sessionId && frame.iframe.isConnected;
+        if (!rows.some(t => t.id === tabId) && !mounted) fail('TAB_CLOSED', 'Artifact tab is not open in this session');
+        issued = true; sidebar.close(tabId);
+        const stillOpen = (await readTabs(sessionId)).some(t => t.id === tabId);
+        if (stillOpen) { issued = false; fail('CLOSE_REFUSED','Native panel retained the tab'); }
+        frames.detach(tabId);
+        return result({ sessionId, tabId, documentId: mounted ? frame.documentId : a.target.documentId }, 'applied', { closed: true, queuedBeforeMount: true }, null, cmd.id);
+      }
       if (cmd.name === 'dsh_artifact_close') {
         const e = frames.target(sessionId,a.target);
         issued = true; sidebar.close(e.tabId);
@@ -151,13 +164,14 @@ export function createChannel(fetch, endpoint, capability, instance) {
   };
 }
 export function startClient({ sessionId, readBootstrap, adapter, fetch, endpoint = '/artifact-panes/tools-v1/channel', crypto, onStatus = () => {} }) {
-  const abort = new AbortController(), instance = crypto.randomUUID(); let channel, busy = false, stopped = false;
+  const abort = new AbortController(), instance = crypto.randomUUID(); let channel, capability, busy = false, stopped = false;
   const tick = async () => {
     if (stopped || busy) return; busy = true;
     try {
       if (!channel) {
         const c = await readBootstrap(sessionId,abort.signal);
         if (c.version !== VERSION || c.sessionId !== sessionId || typeof c.token !== 'string' || typeof c.clientId !== 'string') fail('UNAUTHORIZED','Bootstrap identity mismatch');
+        capability = c;
         channel = createChannel(fetch,endpoint,c,instance);
       }
       const cmd = await channel('poll',{},abort.signal);
@@ -184,8 +198,17 @@ export function startClient({ sessionId, readBootstrap, adapter, fetch, endpoint
   };
   const pollTimer = setInterval(tick,300);
   const heartbeat = setInterval(() => { if (channel && !stopped) channel('heartbeat',{},abort.signal).catch(e=>onStatus({state:'error',code:e.code || 'BRIDGE_UNAVAILABLE',sessionId})); },1500);
+  // Unmounting the session (the user switched chats) is a fact the host needs
+  // now, not after the heartbeat expires. Best effort: the deadline still guards
+  // a lost beacon, and a queued deferrable command keeps its intent either way.
+  const detach = () => {
+    if (!capability) return;
+    try {
+      fetch(endpoint,{method:'POST',mode:'same-origin',credentials:'same-origin',cache:'no-store',keepalive:true,headers:{'Content-Type':'application/json',Authorization:'Bearer '+capability.token},body:JSON.stringify({op:'bye',sessionId:capability.sessionId,clientId:capability.clientId,instance})}).catch?.(()=>{});
+    } catch (e) { /* an unloading page may refuse the request */ }
+  };
   tick();
-  return { stop() { stopped = true; clearInterval(pollTimer); clearInterval(heartbeat); abort.abort(); }, tick };
+  return { stop() { stopped = true; clearInterval(pollTimer); clearInterval(heartbeat); detach(); abort.abort(); }, tick };
 }
 
 export async function readWorkspaceBootstrap(ctx, sessionId, signal) {
