@@ -143,6 +143,10 @@ export class CommandBroker {
     // The renderer went away after the call was accepted (the user switched to
     // another chat). Keep the intent queued and answer instead of failing.
     if (!this.closed && q.deferrable && q.state === 'queued' && q.waiting) {
+      // The live call is over. Like enqueue(), deferred work is swept against
+      // its current deadline, not against the original caller's timer.
+      clearTimeout(q.timer); clearTimeout(q.graceTimer);
+      q.timer = q.graceTimer = undefined;
       q.deadline = this.now() + LIMITS.deferred; q.waiting = false; q.deferred = true;
       if (q.signal) { q.signal.removeEventListener('abort', q.abort); q.signal = null; }
       q.abort = null; this.log(q, 'deferred'); q.resolve(this.queuedResult(q)); return;
