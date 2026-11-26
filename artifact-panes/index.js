@@ -264,6 +264,37 @@ export function apply(ctx) {
     },
   }), 'artifact-panes: workspaces route')
 
+  // The cwd behind one live session id. A session tab needs it to read through
+  // the host resolver: the declared artifacts root exists only on the host, and
+  // `<cwd>/artifacts` in the renderer is not that folder. Metadata only - no
+  // file bytes and no new permission: `/file?root=` applies the same rule.
+  ctx.effect(() => webServer.register({
+    kind: 'exact',
+    path: '/artifact-panes/session-root',
+    handler: async (req, res) => {
+      const send = (code, payload) => {
+        res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+        res.end(JSON.stringify(payload))
+      }
+      if (req.method !== 'GET') { send(405, { ok: false, error: 'GET only' }); return }
+      const query = (() => {
+        try { return new URL(String(req.url || '/'), 'http://127.0.0.1').searchParams } catch (e) { return new URLSearchParams() }
+      })()
+      const sessionId = String(query.get('sessionId') || '').trim()
+      if (!sessionId || sessionId.length > 256) { send(400, { ok: false, error: 'sessionId is required' }); return }
+      try {
+        const sessions = ctx.get('sessions')
+        const list = sessions && typeof sessions.list === 'function' ? sessions.list() : []
+        const hit = (list || []).find((session) => session && session.id === sessionId)
+        const cwd = hit && hit.header && typeof hit.header.cwd === 'string' ? hit.header.cwd : ''
+        if (!cwd || !await knownWorkspace(cwd)) { send(404, { ok: false, error: 'session not found' }); return }
+        send(200, { ok: true, cwd })
+      } catch (e) {
+        send(500, { ok: false, error: 'session root unavailable' })
+      }
+    },
+  }), 'artifact-panes: session root route')
+
   // Agent-facing UI channel: the client polls `.dsh/artifact-panes/ui-command.json`
   // and posts the outcome here. This lets an agent inspect and click the panel
   // through the real DOM instead of guessing from screenshots.

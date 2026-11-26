@@ -224,6 +224,25 @@ function response() {
   await rm(ws2, { recursive: true, force: true });
 }
 
+// The session-root metadata route: a live session answers with its cwd, an
+// unknown id is 404, a missing id is 400, and only GET is allowed.
+{
+  const ask = async (query) => {
+    const { out, res } = response();
+    await routes.get('/artifact-panes/session-root').handler({ method: 'GET', url: '/artifact-panes/session-root' + query }, res);
+    return { code: out.code, payload: JSON.parse(out.body) };
+  };
+  const live = await ask('?sessionId=sess-1');
+  assert.equal(live.code, 200);
+  assert.equal(live.payload.ok, true);
+  assert.equal(live.payload.cwd, root);
+  assert.equal((await ask('?sessionId=missing')).code, 404);
+  assert.equal((await ask('')).code, 400);
+  const wrong = response();
+  await routes.get('/artifact-panes/session-root').handler({ method: 'POST' }, wrong.res);
+  assert.equal(wrong.out.code, 405);
+}
+
 // A closed workspace: readable by path (`root`), never by session. The fake
 // session index below is the only thing that makes it known, exactly like a
 // session that was closed before this process started.

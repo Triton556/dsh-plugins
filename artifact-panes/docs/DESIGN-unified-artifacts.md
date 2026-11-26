@@ -545,3 +545,24 @@ answer/draft routes resolving the newest session (finding 6, pre-existing),
 
 Live verification after the fixes: pending a DSH restart (host code is read at
 process start). Tests: `node --test test/` = 8/8, manifest hashes match.
+
+## Fix for finding 2: one resolver for live tabs (2026-11-27)
+
+A session tab used to read bytes through `workspaceFiles` at `<session cwd>/<path>`.
+With a declared root that is a different tree: without the junction the tab failed
+after a successful open; with a divergent local `artifacts/` it could show a file
+the host never approved; and the 5 MiB `/file` cap did not apply.
+
+Now `ArtifactBody` and the Artifacts page read `artifacts/...` through
+`/artifact-panes/file?root=<session cwd>&path=...`, the same resolver `/library`
+uses. The cwd comes from a new read-only `GET /artifact-panes/session-root?sessionId=`
+route: the host resolves the session from its own sessions service and applies the
+known-workspace check. The client caches it per session (a session header's cwd is
+immutable). Other workspace HTML (outside `artifacts/`) keeps the `workspaceFiles`
+read, because the declaration does not apply there. If the session is unknown or
+the route is unavailable, the client falls back to the old remote read. The tool
+protocol, tab addresses and the deferred-command queue are unchanged.
+
+Consequences: a live tab honours the declaration without a junction, applies the
+5 MiB cap, and shows exactly the file the host authorized. Tests: 8/8. Live check
+pending a DSH restart (client and host code load at process start).
