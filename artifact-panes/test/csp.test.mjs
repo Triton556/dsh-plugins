@@ -14,15 +14,16 @@ assert.ok(begin > 0 && end > begin, 'csp markers must exist');
 const block = client.slice(begin, end);
 const { withCsp } = new Function(block + '\nreturn { withCsp };')();
 
-const root = path.join(here, '..', '..', 'test-fixtures');
+// Keep fixtures in this suite: the old root test-fixtures directory is ignored
+// by Git, so a clean clone failed before exercising the policy.
 const cases = [
-  ['panel-with-title.html', 'Панель плагинов · тест'],
-  ['no-title.html', ''],
-  ['entities.html', 'A &amp; B &lt;тест&gt;'],
+  ['panel-with-title', '<head><meta charset="utf-8"><title>Панель плагинов · тест</title></head>', 'Панель плагинов · тест'],
+  ['no-title', '<head></head>', ''],
+  ['entities', '<HEAD><title>A &amp; B &lt;тест&gt;</title></HEAD>', 'A &amp; B &lt;тест&gt;'],
 ];
 
-for (const [name, title] of cases) {
-  const raw = readFileSync(path.join(root, name));
+for (const [name, headMarkup, title] of cases) {
+  const raw = Buffer.from(`<!doctype html><html>${headMarkup}<body>Test</body></html>`, 'utf8');
   const out = withCsp(raw);
   assert.ok(out.includes('<meta http-equiv="Content-Security-Policy"'), name + ': meta present');
   assert.equal((out.match(/Content-Security-Policy/g) || []).length, 1, name + ': exactly one meta');
