@@ -19,6 +19,12 @@ const attached = new Set();
 const detachTimers = new Map();
 const claims = new Map();      // tabId -> { title, url, at }
 const snapshots = new Map();   // tabId -> { at, nodes }
+const snapshotReads = new Map(); // tabId -> identity of the current read
+
+function invalidateSnapshot(tabId) {
+  snapshots.delete(tabId);
+  snapshotReads.delete(tabId);
+}
 
 // ------------------------------------------------------------------ plumbing
 
@@ -146,10 +152,10 @@ chrome.debugger.onDetach.addListener((source) => {
   if (source && source.tabId !== undefined) { attached.delete(source.tabId); cancelDetach(source.tabId); }
 });
 chrome.tabs.onUpdated.addListener((tabId, change) => {
-  if (change.status === 'loading' || change.url !== undefined) snapshots.delete(tabId);
+  if (change.status === 'loading' || change.url !== undefined) invalidateSnapshot(tabId);
 });
 chrome.tabs.onRemoved.addListener((tabId) => {
-  attached.delete(tabId); cancelDetach(tabId); claims.delete(tabId); snapshots.delete(tabId);
+  attached.delete(tabId); cancelDetach(tabId); claims.delete(tabId); invalidateSnapshot(tabId);
 });
 
 async function pickTab(args) {
@@ -204,6 +210,21 @@ async function collectBounds(tabId, backendIds) {
 
 async function axSnapshot(tabId, args) {
   await ensureLoaded(tabId, args);
+  const read = {};
+  snapshotReads.set(tabId, read);
+  try {
+    const result = await readAxSnapshot(tabId, args);
+    if (snapshotReads.get(tabId) !== read) {
+      throw new Error('Browser page changed or the snapshot was superseded; call ax.snapshot again.');
+    }
+    snapshots.set(tabId, { at: Date.now(), nodes: result.nodes });
+    return result;
+  } finally {
+    if (snapshotReads.get(tabId) === read) snapshotReads.delete(tabId);
+  }
+}
+
+async function readAxSnapshot(tabId, args) {
   await attach(tabId);
   await cdp(tabId, 'Accessibility.enable');
   const tree = await cdp(tabId, 'Accessibility.getFullAXTree');
@@ -234,7 +255,6 @@ async function axSnapshot(tabId, args) {
     for (const node of nodes) if (node.backendNodeId && boxes.has(node.backendNodeId)) node.bounds = boxes.get(node.backendNodeId);
   }
   const document = await cdp(tabId, 'Runtime.evaluate', { expression: 'location.href', returnByValue: true });
-  snapshots.set(tabId, { at: Date.now(), nodes });
   return { tabId, url: (document.result && document.result.value) || null, count: nodes.length, nodes };
 }
 
@@ -283,7 +303,7 @@ async function withMutation(tabId, fn) {
     if (!/detached|not attached|target closed|timeout after/i.test(String(error?.message || error))) throw error;
     attached.delete(tabId);
     cancelDetach(tabId);
-    snapshots.delete(tabId);
+    invalidateSnapshot(tabId);
     throw new Error('Browser action may already have run. Inspect the tab again before retrying.', { cause: error });
   }
 }
@@ -418,7 +438,7 @@ async function pageNavigate(tabId, url) {
   }
   return withMutation(tabId, async () => {
     await cdp(tabId, 'Page.enable');
-    snapshots.delete(tabId);
+    invalidateSnapshot(tabId);
     const navigation = await cdp(tabId, 'Page.navigate', { url });
     if (navigation?.errorText) throw new Error('Navigation failed: ' + navigation.errorText);
     const deadline = Date.now() + 20000;

@@ -30,3 +30,30 @@ test('loading a new page discards only that tab’s previous AX snapshot', () =>
   assert.throws(() => vm.runInContext('snapshotNode(12, 0)', context), /no fresh ax snapshot/);
   assert.equal(vm.runInContext('snapshots.has(13)', context), true);
 });
+
+test('a snapshot interrupted by navigation cannot repopulate the cache', async () => {
+  let url = 'https://fixture.invalid/a';
+  chrome.tabs.get = async () => ({ status: 'complete', url });
+  chrome.debugger.sendCommand = async (_, method) => {
+    if (method === 'Accessibility.getFullAXTree') {
+      url = 'https://fixture.invalid/b';
+      listeners.get('updated')(14, { status: 'loading', url });
+      return { nodes: [{ role: { value: 'button' }, name: { value: 'Page A' }, backendDOMNodeId: 21 }] };
+    }
+    if (method === 'Runtime.evaluate') return { result: { value: url } };
+    return {};
+  };
+  await assert.rejects(vm.runInContext('axSnapshot(14, {})', context), /page changed/i);
+  assert.throws(() => vm.runInContext('snapshotNode(14, 0)', context), /no fresh ax snapshot/);
+
+  chrome.debugger.sendCommand = async (_, method) => {
+    if (method === 'Accessibility.getFullAXTree') {
+      return { nodes: [{ role: { value: 'button' }, name: { value: 'Page B' }, backendDOMNodeId: 42 }] };
+    }
+    if (method === 'Runtime.evaluate') return { result: { value: url } };
+    return {};
+  };
+  const fresh = await vm.runInContext('axSnapshot(14, {})', context);
+  assert.equal(fresh.url, url);
+  assert.equal(vm.runInContext('snapshotNode(14, 0).name', context), 'Page B');
+});
