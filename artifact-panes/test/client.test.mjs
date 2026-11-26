@@ -317,6 +317,20 @@ function findNodes(node, predicate) {
   return out;
 }
 
+// The frame lease is released only by the element that owns it. Releasing a
+// fresh lease from a passive cleanup left a visible artifact that no artifact
+// tool could address (the tab kept TAB_CLOSED for its whole life).
+{
+  let disposed = 0;
+  const live = { iframe: { isConnected: true }, dispose: () => { disposed += 1; } };
+  assert.equal(module.releaseLeaseIfStale(live), live, 'a lease whose iframe is on screen is kept');
+  assert.equal(disposed, 0);
+  const gone = { iframe: { isConnected: false }, dispose: () => { disposed += 1; } };
+  assert.equal(module.releaseLeaseIfStale(gone), null, 'a lease whose iframe left is released');
+  assert.equal(disposed, 1);
+  assert.equal(module.releaseLeaseIfStale(null), null, 'no lease is not an error');
+}
+
 console.log('artifact-panes client module: OK');
 console.log('  registered type:', def.id, '| kind:', def.kind, '| patterns:', def.patterns.join(', '));
 console.log('  slot registration:', calls.slots[0].options.name, '/', calls.slots[0].options.key);
