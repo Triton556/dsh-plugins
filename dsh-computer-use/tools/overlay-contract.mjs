@@ -16,10 +16,13 @@ registerHooks({ resolve(spec, ctx, next) {
 }});
 
 const { apply } = await import('../index.js');
-const tools = new Map(), starts = [];
+const tools = new Map(), starts = [], savedImages = [];
 const ctx = {
   inject(names, setup) { if (names.includes('tools')) setup(this); },
-  get(name) { if (name === 'tools') return { register: d => { tools.set(d.name, d); return () => tools.delete(d.name); } }; },
+  get(name) {
+    if (name === 'tools') return { register: d => { tools.set(d.name, d); return () => tools.delete(d.name); } };
+    if (name === 'attachments') return { async saveImage(value) { savedImages.push(value); return { attachmentId: 'fixture' }; } };
+  },
   effect(start) { starts.push(start()); },
 };
 apply(ctx);
@@ -108,3 +111,20 @@ globalThis.dshTestEngine = async (opts, hooks) => {
 };
 assert.equal((await click.execute({ window: 'Fixture', x: 10, y: 20 })).ok, true);
 console.log('PASS: passive overlap, exclusive input, stale geometry callback');
+
+// The production wrapper must attach the GIF itself, even when the caller
+// supplies no path and the receipt contains spaces and parentheses.
+const clip = join(tmpdir(), 'capture (test).gif');
+writeFileSync(clip, 'fake GIF payload');
+globalThis.dshTestEngine = async opts => {
+  assert.equal(opts.Action, 'video');
+  assert.equal(opts.Method, 'print');
+  assert.equal(opts.Format, 'gif');
+  assert.equal(opts.Path, undefined);
+  return { ok: true, text: `video: ${clip} (1.2 KB, 2 frames @ 10 fps, gif)` };
+};
+const animation = await tools.get('computer_video').execute({ format: 'gif', window: 'Fixture' });
+assert.equal(animation.image?.attachmentId, 'fixture');
+assert.equal(savedImages[0]?.mediaType, 'image/gif');
+assert.equal(savedImages[0]?.data.toString(), 'fake GIF payload');
+console.log('PASS: pathless GIF attaches itself, not a PNG poster');

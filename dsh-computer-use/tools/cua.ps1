@@ -214,6 +214,53 @@ function Move-To([int]$px, [int]$py) {
   Wait-ActionDelay $Delay
 }
 
+function New-CapturePath([string]$dir, [string]$prefix, [string]$extension = '') {
+  Join-Path $dir ('{0}-{1:yyyyMMdd-HHmmss}-{2}{3}' -f $prefix, (Get-Date), [guid]::NewGuid().ToString('N'), $extension)
+}
+
+function Save-Video([string]$target, [IntPtr]$handle, [string]$format, [int]$count, [int]$intervalMs) {
+  if ($handle -eq [IntPtr]::Zero) { throw '-Window or -ProcessId is required' }
+  if ($count -lt 1) { throw 'VIDEO_FAILED: at least one frame is required.' }
+  if ($target -and [IO.Path]::GetExtension($target) -ne ".$format") {
+    throw "VIDEO_FAILED: destination must end in .$format for the requested format."
+  }
+  if (-not $target) { $target = New-CapturePath $env:TEMP 'dsh-cua-video' ".$format" }
+  $target = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($target)
+  if (Test-Path -LiteralPath $target -PathType Container) { throw 'VIDEO_FAILED: destination is a directory.' }
+  $dir = New-CapturePath ([IO.Path]::GetTempPath()) 'dsh-cua-frames'
+  New-Item -ItemType Directory -Path $dir | Out-Null
+  try {
+    for ($i = 0; $i -lt $count; $i++) {
+      [void](Shot (Join-Path $dir ("frame-{0:000}.png" -f $i)) $handle)
+      if ($i -lt ($count - 1)) { Start-Sleep -Milliseconds $intervalMs }
+    }
+    $ffmpeg = Get-Command ffmpeg -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $ffmpeg) { throw 'ffmpeg not found' }
+    $fps = [Math]::Max(1, [int](1000 / [Math]::Max(1, $intervalMs)))
+    $encoded = Join-Path $dir "clip.$format"
+    $encoderArgs = @('-nostdin', '-loglevel', 'error', '-framerate', "$fps", '-i', (Join-Path $dir 'frame-%03d.png'))
+    if ($format -eq 'gif') {
+      $encoderArgs += @('-filter_complex_threads', '1', '-filter_complex', 'scale=960:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse', '-f', 'gif', $encoded)
+    } else {
+      $encoderArgs += @('-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2', '-pix_fmt', 'yuv420p', '-vcodec', 'libx264', '-preset', 'veryfast', '-f', 'mp4', $encoded)
+    }
+    & $ffmpeg.Source @encoderArgs | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "ffmpeg failed (exit $LASTEXITCODE)" }
+    $clip = Get-Item -LiteralPath $encoded -ErrorAction SilentlyContinue
+    if (-not $clip -or $clip.Length -le 0) { throw 'ffmpeg produced no clip' }
+    Move-Item -LiteralPath $encoded -Destination $target -Force
+    if ($format -eq 'mp4') {
+      try {
+        Copy-Item -LiteralPath (Join-Path $dir 'frame-000.png') -Destination ([IO.Path]::ChangeExtension($target, '.png')) -Force
+      } catch {}
+    }
+    "video: $target ($([math]::Round($clip.Length / 1KB, 1)) KB, $count frames @ $fps fps, $format)"
+  } catch {
+    throw "VIDEO_FAILED: $($_.Exception.Message); frames kept in $dir"
+  }
+  Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 function New-ShotGraphics($bitmap) {
   return [System.Drawing.Graphics]::FromImage($bitmap)
 }
@@ -257,7 +304,7 @@ function Capture-ShotBitmap([System.IntPtr]$h, [string]$method) {
 function Shot([string]$target, [System.IntPtr]$h) {
   if (-not $target) {
     $dir = Join-Path $env:TEMP 'dsh-cua'
-    $target = Join-Path $dir ("shot-{0:yyyyMMdd-HHmmss}.png" -f (Get-Date))
+    $target = New-CapturePath $dir 'shot' '.png'
   }
   $dir = Split-Path -Parent $target; if ($dir) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
   $bmp = Capture-ShotBitmap $h $Method
@@ -701,7 +748,7 @@ switch ($Action) {
   }
   'shot' {
     if ($Width -gt 0 -and $Height -gt 0) {
-      $target = if ($Path) { $Path } else { Join-Path (Join-Path $env:TEMP 'dsh-cua') ("region-{0:yyyyMMdd-HHmmss}.png" -f (Get-Date)) }
+      $target = if ($Path) { $Path } else { New-CapturePath (Join-Path $env:TEMP 'dsh-cua') 'region' '.png' }
       Shot-Region $target $h $X $Y $Width $Height
     } else {
       Shot $Path $h
@@ -749,7 +796,7 @@ switch ($Action) {
   }
   'record' {
     if ($h -eq [System.IntPtr]::Zero) { throw '-Window or -ProcessId is required' }
-    $dir = if ($Path) { $Path } else { Join-Path $env:TEMP ('dsh-cua-record-' + (Get-Date -Format 'yyyyMMdd-HHmmss')) }
+    $dir = if ($Path) { $Path } else { New-CapturePath $env:TEMP 'dsh-cua-record' }
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     $count = 0
     for ($i = 0; $i -lt $Frames; $i++) {
@@ -760,50 +807,8 @@ switch ($Action) {
     }
     "recorded $count frames in $dir"
   }
-  'video' {
-    if ($h -eq [System.IntPtr]::Zero) { throw '-Window or -ProcessId is required' }
-    $out = if ($Path) { $Path } else { Join-Path $env:TEMP ("dsh-cua-video-{0:yyyyMMdd-HHmmss}.mp4" -f (Get-Date)) }
-    $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("dsh-cua-frames-" + [guid]::NewGuid().ToString('N').Substring(0,8))
-    New-Item -ItemType Directory -Force -Path $dir | Out-Null
-    # PrintWindow frames keep working for covered Chromium/Electron windows, which
-    # is exactly what ffmpeg's gdigrab cannot capture (it records black).
-    for ($i = 0; $i -lt $Frames; $i++) {
-      $frame = Join-Path $dir ("frame-{0:000}.png" -f $i)
-      [void](Shot $frame $h)
-      if ($i -lt ($Frames - 1)) { Start-Sleep -Milliseconds $Interval }
-    }
-    $ffmpeg = (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source
-    if (-not $ffmpeg) { "ffmpeg not found; frames kept in $dir"; return }
-    if ($Format -eq 'gif') {
-      # Animated GIF: the chat can show it inline, an MP4 cannot.
-      $fps = [Math]::Max(1, [int](1000 / [Math]::Max(1, $Interval)))
-      $gifArgs = @('-y', '-loglevel', 'error', '-framerate', "$fps", '-i', (Join-Path $dir 'frame-%03d.png'),
-                   '-vf', 'scale=960:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse', $out)
-      $gifProc = Start-Process -FilePath $ffmpeg -ArgumentList $gifArgs -PassThru -Wait -WindowStyle Hidden
-      if ($gifProc.ExitCode -eq 0 -and (Test-Path $out)) {
-        "video: $out ($([math]::Round((Get-Item $out).Length / 1KB, 1)) KB, $Frames frames @ $fps fps, gif)"
-        Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
-      } else {
-        "ffmpeg gif failed (exit $($gifProc.ExitCode)); frames kept in $dir"
-      }
-      return
-    }
-    $fps = [Math]::Max(1, [int](1000 / [Math]::Max(1, $Interval)))
-    $args = @('-y', '-loglevel', 'error', '-framerate', "$fps", '-i', (Join-Path $dir 'frame-%03d.png'),
-              '-pix_fmt', 'yuv420p', '-vcodec', 'libx264', '-preset', 'veryfast', $out)
-    $proc = Start-Process -FilePath $ffmpeg -ArgumentList $args -PassThru -Wait -WindowStyle Hidden
-    if ($proc.ExitCode -eq 0 -and (Test-Path $out)) {
-      # Keep the first frame as a poster so a chat can show a still of the clip.
-      try {
-        $poster = [System.IO.Path]::ChangeExtension($out, '.png')
-        Copy-Item (Join-Path $dir 'frame-000.png') $poster -Force -ErrorAction Stop
-      } catch {}
-      "video: $out ($([math]::Round((Get-Item $out).Length / 1KB, 1)) KB, $Frames frames @ $fps fps)"
-      Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
-    } else {
-      "ffmpeg failed (exit $($proc.ExitCode)); frames kept in $dir"
-    }
-  }  'ocr' {
+  'video' { Save-Video $Path $h $Format $Frames $Interval }
+  'ocr' {
     if (-not $Path) { throw '-Path is required' }
     Convert-Ocr $Path
   }

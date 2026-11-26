@@ -448,7 +448,7 @@ export const TOOLS = [
       interval: { type: 'integer', description: 'Delay between frames ms' },
       dir: { type: 'string', description: 'Output directory' }
     },
-    run: (a) => ({ action: 'record', window: a.window, processId: a.pid, frames: a.frames, interval: a.interval, path: a.dir })
+    run: (a) => ({ action: 'record', method: 'print', window: a.window, processId: a.pid, frames: a.frames, interval: a.interval, path: a.dir })
   },
   {
     name: 'computer_video',
@@ -458,10 +458,10 @@ export const TOOLS = [
       pid: { type: 'integer', description: 'Target this process id' },
       frames: { type: 'integer', description: 'Frame count, default 30' },
       interval: { type: 'integer', description: 'Delay between frames ms (sets fps)' },
-      path: { type: 'string', description: 'Output path (.mp4 or .gif)' },
+      path: { type: 'string', description: 'Optional output path; extension must match format (.mp4 or .gif)' },
       format: { type: 'string', enum: ['mp4', 'gif'], description: 'mp4 (default) or an animated gif' }
     },
-    run: (a) => ({ action: 'video', window: a.window, processId: a.pid, frames: a.frames, interval: a.interval, path: a.path, format: a.format || 'mp4' })
+    run: (a) => ({ action: 'video', method: 'print', window: a.window, processId: a.pid, frames: a.frames, interval: a.interval, path: a.path, format: a.format || 'mp4' })
   },
   {
     name: 'computer_ocr',
@@ -631,10 +631,10 @@ export function apply(ctx, config = {}) {
                 if (result && result.ok && (spec.name === 'computer_shot' || spec.name === 'computer_video')) {
                   const produced = spec.name === 'computer_shot'
                     ? String(result.text || '').trim()
-                    : ((String(result.text || '').match(/([A-Za-z]:[^\s()]+\.(?:mp4|gif))/i) || [])[1] || '');
+                    : ((String(result.text || '').match(/^video: (.+\.(?:mp4|gif)) \(\d+(?:[.,]\d+)? KB, \d+ frames @ \d+ fps, (?:mp4|gif)\)$/im) || [])[1] || '');
                   // An mp4 cannot be shown inline, so attach its poster frame; a gif
                   // (animated) is attached as-is, like a screenshot.
-                  const mediaPath = produced && produced.toLowerCase().endsWith('.mp4')
+                  const mediaPath = produced && /\.mp4$/i.test(produced)
                     ? produced.replace(/\.mp4$/i, '.png')
                     : produced;
                   const image = await attachImage(toolCtx, mediaPath);

@@ -51,6 +51,7 @@ test_tmp="$(mktemp -d)"
 TMPDIR="$test_tmp" DSH_CUA_TEST_TEMP="$test_tmp" node dsh-computer-use/tools/overlay-contract.mjs
 pwsh -NoProfile -File dsh-computer-use/tools/input-contract.ps1
 pwsh -NoProfile -File dsh-computer-use/tools/capture-contract.ps1
+TEMP="$test_tmp" TMPDIR="$test_tmp" DSH_CUA_TEST_TEMP="$test_tmp" pwsh -NoProfile -File dsh-computer-use/tools/video-contract.ps1
 DSH_REAL_TOOLS=/path/to/@deepseek-ai/dsh-tools/lib/index.js node dsh-computer-use/tools/real-schema.mjs
 ```
 
@@ -82,6 +83,15 @@ capture APIs, exercises both paths and verifies native resources are released on
 failure. This does not validate real window pixels, DPI or image-to-click
 coordinate mapping across monitors or after image resizing.
 
+### Video output
+
+DSH recordings request the window capture backend explicitly. A video defaults
+to the requested container, and a missing or failing encoder reports a tool
+failure with the raw frame directory instead of claiming success. Generated
+paths are unique even for calls made in the same second. Verified GIF attachment
+routing with a mock store; real FFmpeg and ffprobe on Linux encoded and decoded
+two synthetic frames in both GIF and MP4, not Windows desktop frames.
+
 ## Windows acceptance (not run)
 
 Use a disposable, unlocked Windows desktop, separate from any work or credentials.
@@ -98,7 +108,9 @@ Record DSH version, commit, DPI, display topology and screenshots before/after.
    mouse-button release after interrupting a drag. With a second fixture window
    partly covering the first, compare full and cropped shots in both modes.
    Verify the screenshot point-to-click mapping for a virtual desktop whose
-   origin is negative, including a crop and a resized attachment.
+   origin is negative, including a crop and a resized attachment. Play a short
+   capture before using it as evidence; use an independent desktop recording
+   for overlay timing if window-only recordings omit that layer.
 3. Chrome/Edge in a clean profile where the owner has installed the native host
    and extension: wait, snapshot, fill/clear, click, navigate, verify a stale
    index is rejected. Check detach after an input never repeats it.
