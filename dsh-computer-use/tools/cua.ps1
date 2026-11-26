@@ -47,6 +47,8 @@ param(
   [ValidateSet('mp4','gif')][string]$Format = 'mp4',
   [int]$ProcessId = 0,
   [string]$Script,
+  [ValidatePattern('^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$')][string]$StopToken,
+  [long]$DeadlineMs,
   [switch]$Overlay
 )
 
@@ -180,9 +182,36 @@ function Convert-Point([System.IntPtr]$h, [int]$px, [int]$py) {
   return @{ X = $p.X; Y = $p.Y }
 }
 
+$stopSignal = if ($StopToken) { Join-Path $env:TEMP "dsh-cua-stop-$StopToken.signal" }
+
+function Assert-ActionActive {
+  if ($stopSignal -and [IO.File]::Exists($stopSignal)) { throw 'STOPPED: user requested cancellation.' }
+  if ($DeadlineMs -gt 0 -and [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() -ge $DeadlineMs) {
+    throw 'TIMED_OUT: input cancelled at the next safe point.'
+  }
+}
+
+function Wait-ActionDelay([int]$milliseconds) {
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  while ($clock.ElapsedMilliseconds -lt $milliseconds) {
+    Assert-ActionActive
+    $remaining = $milliseconds - $clock.ElapsedMilliseconds
+    if ($remaining -gt 0) { Start-Sleep -Milliseconds ([int][Math]::Min(25, $remaining)) }
+  }
+  Assert-ActionActive
+}
+
+function Invoke-MousePress([uint32]$down, [uint32]$up, [scriptblock]$body) {
+  Assert-ActionActive
+  [void][Cua.Native]::mouse_event($down, 0, 0, 0, [UIntPtr]::Zero)
+  try { & $body }
+  finally { [void][Cua.Native]::mouse_event($up, 0, 0, 0, [UIntPtr]::Zero) }
+}
+
 function Move-To([int]$px, [int]$py) {
+  Assert-ActionActive
   if (-not [Cua.Native]::SetCursorPos($px, $py)) { throw 'Unable to move the pointer; no input sent.' }
-  Start-Sleep -Milliseconds $Delay
+  Wait-ActionDelay $Delay
 }
 
 function Shot([string]$target, [System.IntPtr]$h) {
@@ -234,6 +263,7 @@ function Send-UnicodeText([string]$value, [System.IntPtr]$handle) {
   }
   $size = [System.Runtime.InteropServices.Marshal]::SizeOf([type]'Cua.Keys+INPUT')
   foreach ($ch in $value.ToCharArray()) {
+    Assert-ActionActive
     Assert-Foreground $handle
     $down = New-Object Cua.Keys+INPUT
     $up = New-Object Cua.Keys+INPUT
@@ -256,6 +286,7 @@ function Send-UnicodeText([string]$value, [System.IntPtr]$handle) {
 function Wait-For([System.IntPtr]$h, [string]$text, [string]$windowName, [int]$timeout) {
   $deadline = (Get-Date).AddMilliseconds($timeout)
   while ((Get-Date) -lt $deadline) {
+    Assert-ActionActive
     if ($windowName) {
       try { $probe = Get-WindowHandle $windowName; if ($probe -ne [System.IntPtr]::Zero) { return "window-ready:$probe" } } catch {}
     }
@@ -263,7 +294,7 @@ function Wait-For([System.IntPtr]$h, [string]$text, [string]$windowName, [int]$t
       $hitNode = Find-UiNode $h $text | Select-Object -First 1
       if ($hitNode) { return "element-ready:$($hitNode.name)" }
     }
-    Start-Sleep -Milliseconds 120
+    Wait-ActionDelay 120
   }
   return 'timeout'
 }
@@ -478,9 +509,7 @@ function Invoke-UiNode($node, [System.IntPtr]$hwnd) {
   Assert-PointerTarget $hwnd $cx $cy
   Move-To $cx $cy
   Assert-PointerTarget $hwnd $cx $cy
-  [void][Cua.Native]::mouse_event([Cua.Native]::LBUTTONDOWN, 0, 0, 0, [UIntPtr]::Zero)
-  Start-Sleep -Milliseconds 40
-  [void][Cua.Native]::mouse_event([Cua.Native]::LBUTTONUP, 0, 0, 0, [UIntPtr]::Zero)
+  Invoke-MousePress ([Cua.Native]::LBUTTONDOWN) ([Cua.Native]::LBUTTONUP) { Wait-ActionDelay 40 }
   return "clicked '$($node.name)' at $cx,$cy"
 }
 
@@ -516,6 +545,7 @@ function Write-OverlayGeometry([System.IntPtr]$handle, $point = $null) {
   "[overlay] hwnd=$($handle.ToInt64()) rect=$($rect.Left),$($rect.Top),$($rect.Right),$($rect.Bottom)$pos"
 }
 
+Assert-ActionActive
 switch ($Action) {
   'list' {
     Get-Process | Where-Object { $_.MainWindowHandle -ne 0 } |
@@ -703,6 +733,7 @@ switch ($Action) {
             else { Start-Process -FilePath $Path -PassThru }
     $deadline = (Get-Date).AddMilliseconds($Timeout)
     while ((Get-Date) -lt $deadline) {
+    Assert-ActionActive
       $win = Get-TopWindows | Where-Object { $_.pid -eq $proc.Id } | Select-Object -First 1
       if ($win) {
         if ($Park) {
@@ -792,9 +823,12 @@ switch ($Action) {
     Write-OverlayGeometry $h $pt
     $down = if ($Right) { [Cua.Native]::RBUTTONDOWN } else { [Cua.Native]::LBUTTONDOWN }
     $up = if ($Right) { [Cua.Native]::RBUTTONUP } else { [Cua.Native]::LBUTTONUP }
-    [void][Cua.Native]::mouse_event($down, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 40
-    [void][Cua.Native]::mouse_event($up, 0, 0, 0, [UIntPtr]::Zero)
-    if ($Double) { Start-Sleep -Milliseconds 60; Assert-PointerTarget $h $pt.X $pt.Y; [void][Cua.Native]::mouse_event($down, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 40; [void][Cua.Native]::mouse_event($up, 0, 0, 0, [UIntPtr]::Zero) }
+    Invoke-MousePress $down $up { Wait-ActionDelay 40 }
+    if ($Double) {
+      Wait-ActionDelay 60
+      Assert-PointerTarget $h $pt.X $pt.Y
+      Invoke-MousePress $down $up { Wait-ActionDelay 40 }
+    }
     "clicked $($pt.X),$($pt.Y)"
   }
   'drag' {
@@ -807,17 +841,14 @@ switch ($Action) {
     Move-To $a.X $a.Y
     Assert-PointerTarget $h $a.X $a.Y
     Write-OverlayGeometry $h $a
-    [void][Cua.Native]::mouse_event([Cua.Native]::LBUTTONDOWN, 0, 0, 0, [UIntPtr]::Zero)
-    try {
-      Start-Sleep -Milliseconds 60
+    Invoke-MousePress ([Cua.Native]::LBUTTONDOWN) ([Cua.Native]::LBUTTONUP) {
+      Wait-ActionDelay 60
       for ($i = 1; $i -le $Steps; $i++) {
         Assert-Foreground $h
         $px = [int]($a.X + ($b.X - $a.X) * $i / $Steps)
         $py = [int]($a.Y + ($b.Y - $a.Y) * $i / $Steps)
         Move-To $px $py
       }
-    } finally {
-      [void][Cua.Native]::mouse_event([Cua.Native]::LBUTTONUP, 0, 0, 0, [UIntPtr]::Zero)
     }
     "dragged $($a.X),$($a.Y) -> $($b.X),$($b.Y)"
   }
@@ -828,6 +859,7 @@ switch ($Action) {
       Focus-Window $h
       Assert-Foreground $h
       Write-OverlayGeometry $h
+      Assert-ActionActive
       if ($Unicode) { Send-UnicodeText $Text $h }
       else { [System.Windows.Forms.SendKeys]::SendWait($Text); "typed $($Text.Length) chars" }
     }
@@ -837,6 +869,7 @@ switch ($Action) {
       Focus-Window $h
       Assert-Foreground $h
       Write-OverlayGeometry $h
+      Assert-ActionActive
       [System.Windows.Forms.SendKeys]::SendWait($Text); "sent $Text"
     }
   }
@@ -848,6 +881,7 @@ switch ($Action) {
     Move-To $pt.X $pt.Y
     Assert-PointerTarget $h $pt.X $pt.Y
     Write-OverlayGeometry $h $pt
+    Assert-ActionActive
     [void][Cua.Native]::mouse_event([Cua.Native]::WHEEL, 0, 0, $Delta, [UIntPtr]::Zero)
     "scrolled $Delta at $($pt.X),$($pt.Y)"
   }

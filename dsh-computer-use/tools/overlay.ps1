@@ -205,7 +205,7 @@ $script:lastStamp = 0
 $script:lastSeen = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 $script:rock = 0.0
 $script:lastEsc = 0
-$script:stoppedAt = 0
+$script:stoppedToken = ''
 $StopPath = Join-Path $env:TEMP 'dsh-cua-stop.json'
 
 function Read-Snapshot {
@@ -248,40 +248,22 @@ $timer.Add_Tick({
   $visible = $fresh -and (ForegroundMatches $snapshot)
   $screenMode = $snapshot -and $snapshot.mode -eq 'screen'
 
-  # ESC stops the takeover: kill the in-flight action, write a one-shot marker
-  # the plugin reads on the next call, and hide the overlay until it changes.
-  # Polled while the daemon holds a fresh state (the plugin starts it before
-  # every call), not only while the glow is visible: a window-scoped action whose
-  # window is behind must still be cancellable.
-  if ($visible -or $fresh) {
+  # Request cancellation only for the current call. Killing a worker could
+  # interrupt a drag between mouse-down and its finally block.
+  $token = [string]$snapshot.stopToken
+  if ($fresh -and $token -match '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$') {
     $esc = [CuaWpf.Native]::GetAsyncKeyState(0x1B)
     if (($esc -band 0x8001) -ne 0 -and $now - $script:lastEsc -gt 700) {
       $script:lastEsc = $now
-      # ESC cancels what is happening NOW (Codex/Claude behaviour): kill the
-      # in-flight engine invocations, then leave a one-shot marker that tells the
-      # agent why its call died. No timed lockout of anything.
       try {
-        # Limit cancellation to this checkout's own engine, including package
-        # paths with spaces. Never kill another script just named cua.ps1.
-        $enginePath = [Regex]::Escape((Join-Path $PSScriptRoot 'cua.ps1'))
-        $filter = '-File\s+(?:"' + $enginePath + '"|' + $enginePath + ')(?:\s|$)'
-        $engines = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
-          Where-Object { $_.CommandLine -match $filter })
-        foreach ($proc in $engines) {
-          try { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
-        }
-        Note ('esc pressed - killed ' + @($engines).Count + ' engine process(es)')
-        if (@($engines).Count -gt 0) {
-          try {
-            [System.IO.File]::WriteAllText($StopPath, ('{"at":' + $now + '}'), (New-Object System.Text.UTF8Encoding($false)))
-            Note 'esc pressed - one-shot stop marker written'
-          } catch {}
-          $script:stoppedAt = $now
-        }
-      } catch {}
+        $cancelPath = Join-Path $env:TEMP "dsh-cua-stop-$token.signal"
+        [System.IO.File]::WriteAllText($cancelPath, '')
+        [System.IO.File]::WriteAllText($StopPath, ('{"at":' + $now + '}'), (New-Object System.Text.UTF8Encoding($false)))
+        $script:stoppedToken = $token
+      } catch { Note 'Unable to request ESC cancellation' }
     }
   }
-  if ($script:stoppedAt -gt 0 -and ($now - $script:stoppedAt) -lt 4000) { $visible = $false }
+  if ($token -and $script:stoppedToken -eq $token) { $visible = $false }
   if ($visible) { $script:lastSeen = $now }
 
   $frame = $null

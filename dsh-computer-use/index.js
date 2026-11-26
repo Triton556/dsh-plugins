@@ -3,6 +3,7 @@
 // Every tool answers { ok, text }; screenshots and clips also carry an inline
 // attachment so the chat can show the picture without a second tool call.
 import { appendFileSync, readFileSync, existsSync, writeFileSync, unlinkSync, statSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { extname, join } from 'node:path';
@@ -117,7 +118,7 @@ function ensureOverlay() {
 
 // Show the controlled window + action point; the indicator itself decides whether
 // it is visible (only while that window is in the foreground, or the desktop is).
-function pushOverlay(hwnd, rect, click, label, mode, ttlMs = OVERLAY_TTL_MS) {
+function pushOverlay(hwnd, rect, click, label, mode, ttlMs = OVERLAY_TTL_MS, stopToken) {
   try {
     const screenMode = mode === 'screen';
     const point = String(click || '').split(',').map(Number);
@@ -125,6 +126,7 @@ function pushOverlay(hwnd, rect, click, label, mode, ttlMs = OVERLAY_TTL_MS) {
     const state = {
       updated: Date.now(),
       ttlMs,
+      stopToken,
       // A whole-screen run has no window to watch: the banner must stay up while
       // the agent works, regardless of which app happens to be in front.
       screen: screenMode,
@@ -224,8 +226,7 @@ function captionFor(name, args = {}) {
 }
 
 
-// ESC is edge-triggered, like Codex/Claude computer use: the overlay daemon kills
-// the in-flight engine process the moment ESC is pressed, then leaves this marker.
+// The overlay requests cooperative cancellation, then leaves this marker.
 // The next call consumes it once, reports STOPPED so the agent knows what happened,
 // and everything after that works normally - no timed lockout.
 const STOP_MARKER = join(tmpdir(), 'dsh-cua-stop.json');
@@ -265,7 +266,7 @@ const CUA_PROMPT = [
   '  keyboard away from the user. Before the first such call, ask whether they are ready to',
   '  leave the machine alone, then pass user_ready: true. A banner "DeepSeek using your',
   '  computer" appears on screen meanwhile.',
-  '- If the user presses ESC, the in-flight action is cancelled immediately and the',
+  '- If the user presses ESC, the worker stops at its next safe cancellation point and the',
   '  next call reports STOPPED once. Ask the user how to continue - there is no',
   '  lockout, and user_ready is only needed again for whole-screen input.',
   '- Never fight the user for the cursor: if they take over, stop and ask.',
@@ -565,7 +566,7 @@ export function apply(ctx, config = {}) {
               if (stopRequested()) {
                 return {
                   ok: false,
-                  text: 'STOPPED: the user pressed ESC and the running action was cancelled. Check with the user before continuing (retry with user_ready: true only after they agree).'
+                  text: 'STOPPED: the user pressed ESC and cancellation was requested for the running action. Check with the user before continuing (retry with user_ready: true only after they agree).'
                 };
               }
               if (screenWide && !consent) {
@@ -578,8 +579,9 @@ export function apply(ctx, config = {}) {
               // Do not carry a previous target or desktop banner into a new call.
               const point = Number.isFinite(args.x) && Number.isFinite(args.y) ? `${args.x},${args.y}` : '';
               const caption = captionFor(spec.name, args);
+              const stopToken = CUA_OVERLAY ? randomUUID() : undefined;
               if (CUA_OVERLAY) {
-                pushOverlay(0, '', screenWide ? point : '', screenWide ? caption : '', screenWide ? 'screen' : 'window');
+                pushOverlay(0, '', screenWide ? point : '', screenWide ? caption : '', screenWide ? 'screen' : 'window', OVERLAY_TTL_MS, stopToken);
                 await ensureOverlay();
               }
               const call = spec.run(args || {});
@@ -590,12 +592,13 @@ export function apply(ctx, config = {}) {
                 engineArgs[name] = value;
               }
               engineArgs.Overlay = CUA_OVERLAY;
+              engineArgs.StopToken = stopToken;
               let result;
               try {
                 result = await engine(engineArgs, {
                   onLine: (line) => {
                     const geometry = stripOverlay(line);
-                    if (CUA_OVERLAY && geometry.rect) pushOverlay(geometry.hwnd, geometry.rect, geometry.click, caption, 'window');
+                    if (CUA_OVERLAY && geometry.rect) pushOverlay(geometry.hwnd, geometry.rect, geometry.click, caption, 'window', OVERLAY_TTL_MS, stopToken);
                   },
                 });
               } finally {
@@ -608,6 +611,7 @@ export function apply(ctx, config = {}) {
                     // Clear the warning even when the engine fails or was stopped.
                     pushOverlay(0, '', '', '', 'window', 0);
                   }
+                  try { unlinkSync(join(process.env.TEMP || tmpdir(), `dsh-cua-stop-${stopToken}.signal`)); } catch {}
                 }
               }
               try {

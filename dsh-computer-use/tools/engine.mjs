@@ -8,14 +8,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
+const COOPERATIVE_MOUSE_ACTIONS = new Set(['click', 'drag', 'hit']);
 const ENGINE = fileURLToPath(new URL('./cua.ps1', import.meta.url));
 
-function run(command, args, { timeoutMs = 30000, onLine } = {}) {
+function run(command, args, { timeoutMs = 30000, onLine, cooperative = false } = {}) {
   return new Promise((resolve) => {
     const child = spawn(command, args, { windowsHide: true });
     let stdout = '';
     let stderr = '';
-    let timer = setTimeout(() => { try { child.kill(); } catch {} }, timeoutMs);
+    const timer = cooperative ? undefined : setTimeout(() => { try { child.kill(); } catch {} }, timeoutMs);
     let lineBuffer = '';
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
@@ -57,6 +58,11 @@ export async function engine(options, hooks) {
   // Free text goes through a UTF-8 file: quotes, backticks and semicolons then
   // survive any Windows/PowerShell command-line parsing untouched.
   const args = { ...options };
+  const timeoutMs = hooks?.timeoutMs ?? 30000;
+  const cooperative = COOPERATIVE_MOUSE_ACTIONS.has(String(args.Action ?? args.action).toLowerCase());
+  // Never terminate the mouse worker on a deadline. While it owns a press,
+  // termination would skip mouse-up. The worker checks the deadline itself.
+  args.DeadlineMs = Date.now() + timeoutMs;
   let scratch = null;
   let usedScratch = false;
   for (const [key, fileKey] of [['Text', 'TextFile'], ['LaunchArgs', 'LaunchArgsFile'], ['Value', 'ValueFile']]) {
@@ -70,7 +76,7 @@ export async function engine(options, hooks) {
     usedScratch = true;
   }
   try {
-    return await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ENGINE, ...argv(args)], hooks);
+    return await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ENGINE, ...argv(args)], { ...hooks, timeoutMs, cooperative });
   } finally {
     // The engine consumes the files; remove the directory so repeated calls do
     // not litter the temp folder.

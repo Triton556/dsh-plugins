@@ -14,11 +14,13 @@ public struct POINT { public int X, Y; }
 public static System.IntPtr Foreground;
 public static System.IntPtr Hit;
 public static System.IntPtr Root;
+public static System.Collections.Generic.List<uint> MouseEvents = new System.Collections.Generic.List<uint>();
+public static void mouse_event(uint flags, uint x, uint y, uint data, System.UIntPtr extra) { MouseEvents.Add(flags); }
 public static System.IntPtr GetForegroundWindow() { return Foreground; }
 public static System.IntPtr WindowFromPoint(POINT p) { return Hit; }
 public static System.IntPtr GetAncestor(System.IntPtr h, uint flag) { return Root; }
 '@
-foreach ($name in @('Assert-Foreground','Assert-PointerTarget')) {
+foreach ($name in @('Assert-Foreground','Assert-PointerTarget','Assert-ActionActive','Wait-ActionDelay','Invoke-MousePress')) {
   $fn = $ast.Find({ param($node)
     $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
   }, $true)
@@ -53,3 +55,29 @@ $size = [System.Runtime.InteropServices.Marshal]::SizeOf([type]'Cua.Keys+INPUT')
 $expected = if ([System.IntPtr]::Size -eq 8) { 40 } else { 28 }
 if ($size -ne $expected) { throw "Win32 INPUT layout: expected $expected bytes, got $size" }
 Write-Output "PASS: script parsing, foreground/coverage guard, child HWND, Win32 INPUT layout (${size} bytes)"
+
+# Stopping while a press is active must release it before propagating the
+# cancellation. These tests exercise the production PowerShell try/finally.
+$stopSignal = Join-Path ([IO.Path]::GetTempPath()) ("dsh-input-contract-" + [guid]::NewGuid())
+$DeadlineMs = 0
+try {
+  Require-Rejection {
+    Invoke-MousePress 2 4 {
+      [IO.File]::WriteAllText($stopSignal, '')
+      Wait-ActionDelay 0
+    }
+  } 'STOPPED:'
+  if (([Cua.Native]::MouseEvents -join ',') -ne '2,4') { throw 'ESC did not release the left button' }
+  [Cua.Native]::MouseEvents.Clear()
+  Require-Rejection { Invoke-MousePress 2 4 { throw 'unreachable' } } 'STOPPED:'
+  if ([Cua.Native]::MouseEvents.Count) { throw 'Already-cancelled action pressed a button' }
+  [IO.File]::Delete($stopSignal)
+  Require-Rejection {
+    Invoke-MousePress 8 16 {
+      $DeadlineMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - 1
+      Wait-ActionDelay 0
+    }
+  } 'TIMED_OUT:'
+  if (([Cua.Native]::MouseEvents -join ',') -ne '8,16') { throw 'Deadline did not release the right button' }
+  Write-Output 'PASS: per-action stop and deadline release simulated mouse presses once; a cancelled action never presses'
+} finally { [IO.File]::Delete($stopSignal) }

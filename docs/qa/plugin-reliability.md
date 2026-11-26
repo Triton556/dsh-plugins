@@ -53,6 +53,19 @@ pwsh -NoProfile -File dsh-computer-use/tools/input-contract.ps1
 DSH_REAL_TOOLS=/path/to/@deepseek-ai/dsh-tools/lib/index.js node dsh-computer-use/tools/real-schema.mjs
 ```
 
+## Follow-up: cancellation
+
+Escape now signals the active action instead of terminating its worker. Click,
+drag, and the hit fallback release a pressed button on cancellation before
+returning. Those workers also enforce their own deadline rather than being killed
+by Node while the button is down. The portable PowerShell contract simulates
+Escape and a deadline after mouse-down and checks that mouse-up happens exactly
+once. If a native call stalls, cancellation cannot take effect until it returns.
+
+The indicator receives geometry before dispatch, but WPF renders asynchronously.
+Check frame-to-click timing on the Windows fixture rather than assuming the halo
+is already visible when a click lands.
+
 ## Windows acceptance (not run)
 
 Use a disposable, unlocked Windows desktop, separate from any work or credentials.
