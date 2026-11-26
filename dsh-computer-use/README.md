@@ -43,8 +43,9 @@ attachment, so the chat shows the picture without a second tool call.
 
 - Input tools that take over the whole screen need `user_ready: true`; a call
   addressed to one window does not.
-- Coordinates with `window` are window-relative; without it they are screen
-  coordinates.
+- Coordinates with `window` are relative to the full window image at its
+  original size; without it they are screen coordinates. A cropped or resized
+  attachment must be mapped back before sending input.
 - `computer_click` focuses the target window first. Windows that must not be
   raised should be driven through `computer_uitree` + `computer_ui_action`,
   which act on a control without activating anything.
@@ -69,9 +70,9 @@ A missing line means the tools service was unavailable when the bundle applied.
 
 ## Verification suites
 
-`tools/verify.mjs` checks the catalogue shape and that the packaged PowerShell
-engine answers; `tools/scenario.mjs` exercises launch -> screenshot -> park. Both
-run against the installed engine, no browser required.
+See the [QA runbook](../docs/qa/plugin-reliability.md) for portable contracts
+and the Windows checks. The engine requires Windows even when the bundle
+mounts successfully on Linux.
 
 ## Screenshots and clips appear in the chat
 
