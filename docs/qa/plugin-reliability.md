@@ -50,6 +50,7 @@ node dsh-computer-use/tools/text-encoding.mjs
 test_tmp="$(mktemp -d)"
 TMPDIR="$test_tmp" DSH_CUA_TEST_TEMP="$test_tmp" node dsh-computer-use/tools/overlay-contract.mjs
 pwsh -NoProfile -File dsh-computer-use/tools/input-contract.ps1
+pwsh -NoProfile -File dsh-computer-use/tools/capture-contract.ps1
 DSH_REAL_TOOLS=/path/to/@deepseek-ai/dsh-tools/lib/index.js node dsh-computer-use/tools/real-schema.mjs
 ```
 
@@ -72,6 +73,15 @@ The indicator receives geometry before dispatch, but WPF renders asynchronously.
 Check frame-to-click timing on the Windows fixture rather than assuming the halo
 is already visible when a click lands.
 
+## Follow-up: image capture
+
+Full and cropped window shots now use the requested backend. A failed
+PrintWindow call returns an error without saving a PNG and never silently falls
+back to potentially unrelated visible pixels. The portable check stubs the
+capture APIs, exercises both paths and verifies native resources are released on
+failure. This does not validate real window pixels, DPI or image-to-click
+coordinate mapping across monitors or after image resizing.
+
 ## Windows acceptance (not run)
 
 Use a disposable, unlocked Windows desktop, separate from any work or credentials.
@@ -85,7 +95,10 @@ Record DSH version, commit, DPI, display topology and screenshots before/after.
    coordinates. Check halo follows visible bounds; its cursor coincides with
    the actual click. Check minimized/restore, Alt-Tab, Esc during a long call,
    successful linger and no halo on screenshots/listing. Check physical
-   mouse-button release after interrupting a drag.
+   mouse-button release after interrupting a drag. With a second fixture window
+   partly covering the first, compare full and cropped shots in both modes.
+   Verify the screenshot point-to-click mapping for a virtual desktop whose
+   origin is negative, including a crop and a resized attachment.
 3. Chrome/Edge in a clean profile where the owner has installed the native host
    and extension: wait, snapshot, fill/clear, click, navigate, verify a stale
    index is rejected. Check detach after an input never repeats it.

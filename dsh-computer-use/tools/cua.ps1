@@ -214,39 +214,55 @@ function Move-To([int]$px, [int]$py) {
   Wait-ActionDelay $Delay
 }
 
+function New-ShotGraphics($bitmap) {
+  return [System.Drawing.Graphics]::FromImage($bitmap)
+}
+
+function Capture-ShotBitmap([System.IntPtr]$h, [string]$method) {
+  $window = $h -ne [System.IntPtr]::Zero
+  if ($window) {
+    $r = New-Object Cua.Native+RECT
+    if (-not [Cua.Native]::GetWindowRect($h, [ref]$r)) { throw 'CAPTURE_FAILED: could not read window bounds.' }
+    $left = $r.Left; $top = $r.Top
+    $w = $r.Right - $r.Left; $hh = $r.Bottom - $r.Top
+  } else {
+    $v = [System.Windows.Forms.SystemInformation]::VirtualScreen
+    $left = $v.Left; $top = $v.Top; $w = $v.Width; $hh = $v.Height
+  }
+  if ($w -le 0 -or $hh -le 0) { throw 'CAPTURE_FAILED: capture area has no size.' }
+  $bmp = New-Object System.Drawing.Bitmap $w, $hh
+  try {
+    $g = New-ShotGraphics $bmp
+    try {
+      if ($window -and $method -eq 'print') {
+        # PW_RENDERFULLCONTENT for Chromium/Electron. Do not silently switch to
+        # visible pixels (they could belong to a different, overlapping app).
+        $hdc = $g.GetHdc()
+        try {
+          if (-not [Cua.Native]::PrintWindow($h, $hdc, 2)) {
+            throw 'CAPTURE_FAILED: PrintWindow failed. Use method=screen if the window is visible.'
+          }
+        } finally { $g.ReleaseHdc($hdc) }
+      } else {
+        $g.CopyFromScreen($left, $top, 0, 0, $bmp.Size)
+      }
+    } finally { $g.Dispose() }
+    return $bmp
+  } catch {
+    $bmp.Dispose()
+    throw
+  }
+}
+
 function Shot([string]$target, [System.IntPtr]$h) {
   if (-not $target) {
-    $dir = Join-Path $env:TEMP 'dsh-cua'; New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $dir = Join-Path $env:TEMP 'dsh-cua'
     $target = Join-Path $dir ("shot-{0:yyyyMMdd-HHmmss}.png" -f (Get-Date))
   }
   $dir = Split-Path -Parent $target; if ($dir) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
-  if ($h -ne [System.IntPtr]::Zero) {
-    $r = New-Object Cua.Native+RECT
-    [void][Cua.Native]::GetWindowRect($h, [ref]$r)
-    $w = $r.Right - $r.Left; $hh = $r.Bottom - $r.Top
-    if ($w -le 0 -or $hh -le 0) { throw 'window has no size' }
-    $bmp = New-Object System.Drawing.Bitmap $w, $hh
-    if ($Method -eq 'print') {
-      # PW_RENDERFULLCONTENT works for Chromium/Electron even when covered.
-      $g = [System.Drawing.Graphics]::FromImage($bmp)
-      $hdc = $g.GetHdc()
-      [void][Cua.Native]::PrintWindow($h, $hdc, 2)
-      $g.ReleaseHdc($hdc)
-      $g.Dispose()
-    } else {
-      $g = [System.Drawing.Graphics]::FromImage($bmp)
-      $g.CopyFromScreen($r.Left, $r.Top, 0, 0, $bmp.Size)
-      $g.Dispose()
-    }
-  } else {
-    $v = [System.Windows.Forms.SystemInformation]::VirtualScreen
-    $bmp = New-Object System.Drawing.Bitmap $v.Width, $v.Height
-    $g = [System.Drawing.Graphics]::FromImage($bmp)
-    $g.CopyFromScreen($v.Left, $v.Top, 0, 0, $bmp.Size)
-    $g.Dispose()
-  }
-  $bmp.Save($target, [System.Drawing.Imaging.ImageFormat]::Png)
-  $bmp.Dispose()
+  $bmp = Capture-ShotBitmap $h $Method
+  try { $bmp.Save($target, [System.Drawing.Imaging.ImageFormat]::Png) }
+  finally { $bmp.Dispose() }
   Write-Output $target
 }
 
@@ -338,35 +354,18 @@ function Invoke-WindowOp([System.IntPtr]$h) {
 function Shot-Region([string]$target, [System.IntPtr]$h, [int]$rx, [int]$ry, [int]$rw, [int]$rh) {
   if ($rw -le 0 -or $rh -le 0) { throw 'region needs positive width and height' }
   $dir = Split-Path -Parent $target; if ($dir) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
-  # Capture the whole window first (PrintWindow keeps working when covered),
-  # then crop, so region shots inherit the same occlusion-proof behaviour.
-  if ($h -ne [System.IntPtr]::Zero) {
-    $r = New-Object Cua.Native+RECT
-    [void][Cua.Native]::GetWindowRect($h, [ref]$r)
-    $w = $r.Right - $r.Left; $hh = $r.Bottom - $r.Top
-    $full = New-Object System.Drawing.Bitmap $w, $hh
-    $g = [System.Drawing.Graphics]::FromImage($full)
-    $hdc = $g.GetHdc()
-    [void][Cua.Native]::PrintWindow($h, $hdc, 2)
-    $g.ReleaseHdc($hdc)
-    $g.Dispose()
-  } else {
-    $v = [System.Windows.Forms.SystemInformation]::VirtualScreen
-    $full = New-Object System.Drawing.Bitmap $v.Width, $v.Height
-    $g = [System.Drawing.Graphics]::FromImage($full)
-    $g.CopyFromScreen($v.Left, $v.Top, 0, 0, $full.Size)
-    $g.Dispose()
-  }
-  Add-Content -LiteralPath $env:TEMP\cua-region-debug.txt -Value ("rect=$($full.Width)x$($full.Height) rx=$rx ry=$ry rw=$rw rh=$rh")
-  $x = [Math]::Max(0, [Math]::Min($rx, $full.Width - 1))
-  $y = [Math]::Max(0, [Math]::Min($ry, $full.Height - 1))
-  $cw = [Math]::Min($rw, $full.Width - $x)
-  $ch = [Math]::Min($rh, $full.Height - $y)
-  $rect = New-Object System.Drawing.Rectangle $x, $y, $cw, $ch
-  $crop = $full.Clone($rect, $full.PixelFormat)
-  $crop.Save($target, [System.Drawing.Imaging.ImageFormat]::Png)
-  $crop.Dispose()
-  $full.Dispose()
+  # Crop the same backend as a full screenshot.
+  $full = Capture-ShotBitmap $h $Method
+  try {
+    $x = [Math]::Max(0, [Math]::Min($rx, $full.Width - 1))
+    $y = [Math]::Max(0, [Math]::Min($ry, $full.Height - 1))
+    $cw = [Math]::Min($rw, $full.Width - $x)
+    $ch = [Math]::Min($rh, $full.Height - $y)
+    $rect = New-Object System.Drawing.Rectangle $x, $y, $cw, $ch
+    $crop = $full.Clone($rect, $full.PixelFormat)
+    try { $crop.Save($target, [System.Drawing.Imaging.ImageFormat]::Png) }
+    finally { $crop.Dispose() }
+  } finally { $full.Dispose() }
   return $target
 }
 function Convert-Ocr([string]$imagePath) {
