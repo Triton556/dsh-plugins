@@ -145,6 +145,9 @@ async function detach(tabId) {
 chrome.debugger.onDetach.addListener((source) => {
   if (source && source.tabId !== undefined) { attached.delete(source.tabId); cancelDetach(source.tabId); }
 });
+chrome.tabs.onUpdated.addListener((tabId, change) => {
+  if (change.status === 'loading' || change.url !== undefined) snapshots.delete(tabId);
+});
 chrome.tabs.onRemoved.addListener((tabId) => {
   attached.delete(tabId); cancelDetach(tabId); claims.delete(tabId); snapshots.delete(tabId);
 });
@@ -271,16 +274,17 @@ async function frameContexts(tabId) {
 
 // ------------------------------------------------------------- M1: actions
 
-// Chrome drops a debugger session on navigation or when the user cancels the
-// infobar. Retry once with a fresh attach before surfacing the error.
-async function withAttach(tabId, fn) {
+// A debugger can detach after dispatch succeeded but before its reply. For
+// mutating commands that is an uncertain effect, not a reason to repeat input.
+async function withMutation(tabId, fn) {
   await attach(tabId);
   try { return await fn(); }
   catch (error) {
-    if (!/detached|not attached|target closed/i.test(String(error && error.message))) throw error;
+    if (!/detached|not attached|target closed|timeout after/i.test(String(error?.message || error))) throw error;
     attached.delete(tabId);
-    await attach(tabId);
-    return fn();
+    cancelDetach(tabId);
+    snapshots.delete(tabId);
+    throw new Error('Browser action may already have run. Inspect the tab again before retrying.', { cause: error });
   }
 }
 
@@ -317,7 +321,7 @@ async function clickAt(tabId, x, y) {
 
 async function axClick(tabId, index) {
   const node = snapshotNode(tabId, index);
-  return withAttach(tabId, async () => {
+  return withMutation(tabId, async () => {
     const point = await nodeBox(tabId, node.backendNodeId);
     await clickAt(tabId, point.x, point.y);
     return { tabId, index, role: node.role, name: node.name, clicked: point };
@@ -326,7 +330,7 @@ async function axClick(tabId, index) {
 
 async function axSetValue(tabId, index, value) {
   const node = snapshotNode(tabId, index);
-  return withAttach(tabId, async () => {
+  return withMutation(tabId, async () => {
     const resolved = await cdp(tabId, 'DOM.resolveNode', { backendNodeId: node.backendNodeId });
     const objectId = resolved && resolved.object && resolved.object.objectId;
     if (!objectId) throw new Error('cannot resolve the node for writing');
@@ -391,7 +395,7 @@ function describeKey(combo) {
 async function pressKeys(tabId, keys) {
   const combos = Array.isArray(keys) ? keys : String(keys || '').split(',').map((s) => s.trim()).filter(Boolean);
   if (!combos.length) throw new Error('keys is required');
-  return withAttach(tabId, async () => {
+  return withMutation(tabId, async () => {
     // Keyboard events only reach the tab that owns the focused frame.
     const tab = await tabsGet(tabId);
     if (!tab.active) { await tabsUpdate(tabId, { active: true }); await new Promise((r) => setTimeout(r, 150)); }
@@ -412,9 +416,11 @@ async function pageNavigate(tabId, url) {
   if (/^(chrome|edge|about|devtools|chrome-extension|edge-extension):/i.test(url)) {
     throw new Error('internal pages are not drivable: ' + url);
   }
-  return withAttach(tabId, async () => {
+  return withMutation(tabId, async () => {
     await cdp(tabId, 'Page.enable');
-    await cdp(tabId, 'Page.navigate', { url });
+    snapshots.delete(tabId);
+    const navigation = await cdp(tabId, 'Page.navigate', { url });
+    if (navigation?.errorText) throw new Error('Navigation failed: ' + navigation.errorText);
     const deadline = Date.now() + 20000;
     while (Date.now() < deadline) {
       try {
@@ -538,7 +544,7 @@ async function run(cmd, args) {
       const tab = await tabsGet(tabId);
       assertPage(tab.url);
       if (typeof args.text !== 'string') throw new Error('text is required');
-      return withAttach(tabId, async () => {
+      return withMutation(tabId, async () => {
         await cdp(tabId, 'Input.insertText', { text: args.text });
         return { tabId, typed: args.text.length };
       });
