@@ -3,7 +3,7 @@
 // Every tool answers { ok, text }; screenshots and clips also carry an inline
 // attachment so the chat can show the picture without a second tool call.
 import { appendFileSync, readFileSync, existsSync, writeFileSync, unlinkSync, statSync } from 'node:fs';
-import { spawn, execFileSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { extname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -71,6 +71,8 @@ const OVERLAY_SCRIPT = new URL('./tools/overlay.ps1', import.meta.url);
 const OVERLAY_STATE = join(tmpdir(), 'dsh-cua-overlay-state.json');
 const OVERLAY_PID = join(tmpdir(), 'dsh-cua-overlay.pid');
 const OVERLAY_TTL_MS = 90000;
+const OVERLAY_LINGER_MS = 700;
+const DOTNET_UNIX_EPOCH_TICKS = 621355968000000000n;
 const OVERLAY_MARKER = /^\[overlay\] hwnd=(\d+) rect=(-?\d+,-?\d+,-?\d+,-?\d+)(?: click=(-?\d+,-?\d+))?\s*$/m;
 
 const OVERLAY_BUILD = join(tmpdir(), 'dsh-cua-overlay.build');
@@ -83,15 +85,13 @@ function overlayAlive() {
     process.kill(pid, 0);
     // A daemon started from older overlay.ps1 keeps its old behaviour (ESC
     // coverage, kill filter). Compare the stamped build with the script mtime
-    // and restart it instead of silently running stale code.
+    // and ask the launcher to verify its identity before replacing it.
     try {
-      const stamped = Number(readFileSync(OVERLAY_BUILD, 'utf8').trim());
-      const current = statSync(fileURLToPath(OVERLAY_SCRIPT)).mtimeMs * 10000;
-      if (!Number.isFinite(stamped) || Math.abs(stamped - current) > 50000) {
-        try { process.kill(pid); } catch (error) {}
-        try { unlinkSync(OVERLAY_PID); } catch (error) {}
-        return false;
-      }
+      const stamp = readFileSync(OVERLAY_BUILD, 'utf8').trim();
+      if (!/^\d+$/.test(stamp)) return true;
+      const stamped = Number((BigInt(stamp) - DOTNET_UNIX_EPOCH_TICKS) / 10000n);
+      const current = statSync(fileURLToPath(OVERLAY_SCRIPT)).mtimeMs;
+      if (Math.abs(stamped - current) > 5) return false;
     } catch (error) {
       return true;
     }
@@ -101,41 +101,30 @@ function overlayAlive() {
   }
 }
 
-function refreshOverlay() {
-  if (!CUA_OVERLAY) return Promise.resolve();
-  // Renew the daemon's state (and its ESC listener) without changing what it
-  // shows: the last target and label stay, only the timestamp moves.
-  const last = lastOverlay;
-  if (last) pushOverlay(last.hwnd, last.rect, last.click, last.label, last.mode);
-  else pushOverlay(0, '', '', '', 'window');
-  return ensureOverlay();
-}
-
+let overlayStarting;
 function ensureOverlay() {
   if (overlayAlive()) return Promise.resolve();
-  // A detached Node spawn yields a process that exits before it can create its
-  // window, so the PowerShell engine starts the daemon with Start-Process instead.
-  return (async () => {
+  overlayStarting ??= (async () => {
     try {
       const { engine } = await import('./tools/engine.mjs');
       await engine({ action: 'overlay', Script: fileURLToPath(OVERLAY_SCRIPT) });
     } catch (error) {
       console.warn('[dsh-computer-use] overlay start failed:', String(error && error.message || error).slice(0, 160));
     }
-  })();
+  })().finally(() => { overlayStarting = undefined; });
+  return overlayStarting;
 }
 
 // Show the controlled window + action point; the indicator itself decides whether
 // it is visible (only while that window is in the foreground, or the desktop is).
-let lastOverlay = null;
-function pushOverlay(hwnd, rect, click, label, mode) {
+function pushOverlay(hwnd, rect, click, label, mode, ttlMs = OVERLAY_TTL_MS) {
   try {
     const screenMode = mode === 'screen';
     const point = String(click || '').split(',').map(Number);
     const box = String(rect || '').split(',').map(Number);
     const state = {
       updated: Date.now(),
-      ttlMs: OVERLAY_TTL_MS,
+      ttlMs,
       // A whole-screen run has no window to watch: the banner must stay up while
       // the agent works, regardless of which app happens to be in front.
       screen: screenMode,
@@ -145,8 +134,6 @@ function pushOverlay(hwnd, rect, click, label, mode) {
       mode: screenMode ? 'screen' : 'window'
     };
     writeFileSync(OVERLAY_STATE, JSON.stringify(state), 'utf8');
-    lastOverlay = { hwnd, rect, click, label, mode };
-    ensureOverlay();
   } catch (error) {
     console.warn('[dsh-computer-use] overlay state failed:', String(error && error.message || error).slice(0, 160));
   }
@@ -254,10 +241,6 @@ function stopRequested() {
   }
 }
 
-function clearStop() {
-  try { if (existsSync(STOP_MARKER)) unlinkSync(STOP_MARKER); } catch (error) {}
-}
-
 // Screen-wide input (no window/pid) needs the user's go-ahead: the overlay banner
 // says so, and the tool refuses until the agent confirmed it with the user.
 const SCREEN_INPUT_TOOLS = new Set(['computer_click', 'computer_drag', 'computer_type', 'computer_key', 'computer_scroll']);
@@ -266,7 +249,7 @@ const SCREEN_INPUT_TOOLS = new Set(['computer_click', 'computer_drag', 'computer
 // ------------------------------------------------------------------ system prompt
 const CUA_PROMPT = [
   'Computer use: the computer_* tools drive the real desktop (windows, clicks, typing,',
-  'browser tabs, screenshots, recordings, OCR, Chrome DevTools).',
+  'browser tabs via UI Automation, screenshots, recordings and OCR).',
   '',
   'When to use them: anything that is only reachable through a GUI - an app with no CLI,',
   'a browser page that needs a login, a native dialog, a canvas or video frame that must be',
@@ -498,11 +481,11 @@ export const TOOLS = [
       window: { type: 'string' },
       pid: { type: 'integer', description: 'Target this process id' },
       name: { type: 'string', description: 'Element name substring' },
-      kind: { type: 'string', enum: ['invoke', 'toggle', 'select', 'expand', 'value'], description: 'Preferred pattern' },
+      kind: { type: 'string', enum: ['invoke', 'toggle', 'select', 'expand', 'value'], description: 'Exact pattern; defaults to invoke without falling back to another action' },
       value: { type: 'string', description: 'Value for kind=value' }
     },
-    run: (a) => ({ action: 'uiact', window: a.window, processId: a.pid, text: a.name,
-      value: a.kind === 'value' ? (a.value || '') : '' })
+    run: (a) => ({ action: 'uiact', window: a.window, processId: a.pid, text: a.name, kind: a.kind || 'invoke',
+      value: a.kind === 'value' ? (a.value ?? '') : undefined })
   },
 ];
 
@@ -591,52 +574,41 @@ export function apply(ctx, config = {}) {
                   text: 'REFUSED: this acts on the whole screen. Ask the user to confirm (the on-screen banner "DeepSeek using your computer" shows while you work) and retry with user_ready: true. For a single app, pass window or pid instead - that needs no confirmation.'
                 };
               }
-              if (consent) clearStop();
 
-              // Start the indicator BEFORE the action, not after it: on a cold
-              // start the banner and the ESC listener must exist while the input
-              // runs. The engine's geometry line only arrives at process close.
+              // Do not carry a previous target or desktop banner into a new call.
+              const point = Number.isFinite(args.x) && Number.isFinite(args.y) ? `${args.x},${args.y}` : '';
+              const caption = captionFor(spec.name, args);
               if (CUA_OVERLAY) {
-                if (screenWide) {
-                  const point = Number.isFinite(args.x) && Number.isFinite(args.y) ? `${args.x},${args.y}` : '';
-                  pushOverlay(0, '', point, captionFor(spec.name, args), 'screen');
-                  await ensureOverlay();
-                } else {
-                  // The daemon must be listening before the input starts, or ESC
-                  // cannot cancel the very first action of a session.
-                  await refreshOverlay();
-                }
+                pushOverlay(0, '', screenWide ? point : '', screenWide ? caption : '', screenWide ? 'screen' : 'window');
+                await ensureOverlay();
               }
-
               const call = spec.run(args || {});
               const engineArgs = {};
               for (const [key, value] of Object.entries(call)) {
                 if (key === 'action') { engineArgs.Action = value; continue; }
-                // ui tree depth travels on the engine's -Delta parameter.
                 const name = key === 'depth' ? 'Delta' : key.charAt(0).toUpperCase() + key.slice(1);
                 engineArgs[name] = value;
               }
-              engineArgs.Overlay = true;
-              const result = await engine(engineArgs);
-              if (result && result.text) {
-                const parsed = stripOverlay(result.text);
-                const caption = captionFor(spec.name, args);
-                // The banner (mode 'screen') is only for input that takes over the
-                // whole screen. A window-targeted call glows on that window (mode
-                // 'window'); passive calls without a target (a full-screen shot,
-                // a window listing) show nothing - they do not control anything.
-                if (parsed.rect && CUA_OVERLAY) {
-                  pushOverlay(parsed.hwnd, parsed.rect, parsed.click, caption, 'window');
-                } else if (screenWide && CUA_OVERLAY) {
-                  const point = Number.isFinite(args.x) && Number.isFinite(args.y) ? `${args.x},${args.y}` : '';
-                  pushOverlay(0, '', point, caption, 'screen');
-                } else if (CUA_OVERLAY) {
-                  // A passive call without a target must also clear a previous
-                  // whole-screen state, otherwise the banner and ESC listener
-                  // stay alive for the 90 s TTL while nothing is being driven.
-                  pushOverlay(0, '', '', caption, 'window');
+              engineArgs.Overlay = CUA_OVERLAY;
+              let result;
+              try {
+                result = await engine(engineArgs, {
+                  onLine: (line) => {
+                    const geometry = stripOverlay(line);
+                    if (CUA_OVERLAY && geometry.rect) pushOverlay(geometry.hwnd, geometry.rect, geometry.click, caption, 'window');
+                  },
+                });
+              } finally {
+                const parsed = stripOverlay(result?.text);
+                if (result && parsed.rect) result.text = parsed.text;
+                if (CUA_OVERLAY) {
+                  if (result?.ok && parsed.rect) {
+                    pushOverlay(parsed.hwnd, parsed.rect, parsed.click, caption, 'window', OVERLAY_LINGER_MS);
+                  } else {
+                    // Clear the warning even when the engine fails or was stopped.
+                    pushOverlay(0, '', '', '', 'window', 0);
+                  }
                 }
-                if (parsed.rect) result.text = parsed.text;
               }
               try {
                 if (result && result.ok && (spec.name === 'computer_shot' || spec.name === 'computer_video')) {
@@ -662,7 +634,7 @@ export function apply(ctx, config = {}) {
           appendFileSync(`${tmpdir()}/dsh-computer-use.log`, `${new Date().toISOString()} pid=${process.pid} registered ${TOOLS.length} tools\n`);
         } catch (error) {}
         console.info(`[dsh-computer-use] registered ${TOOLS.length} tools`);
-        return () => {};
+        return () => { for (const dispose of disposers.splice(0).reverse()) { try { dispose(); } catch {} } };
       }).catch((error) => {
         console.warn('[dsh-computer-use] tool registration failed:', String(error && error.message || error).slice(0, 300));
       });

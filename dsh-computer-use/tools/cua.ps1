@@ -1,4 +1,4 @@
-# Minimal computer-use toolkit for Windows: see the screen, focus windows,
+﻿# Minimal computer-use toolkit for Windows: see the screen, focus windows,
 # click, drag, type and scroll. Pure PowerShell + Win32 via Add-Type.
 #
 #   pwsh -File cua.ps1 -Action list
@@ -12,7 +12,7 @@
 #   pwsh -File cua.ps1 -Action info  -Window "Claude"
 #
 # Coordinates are screen coordinates unless -Window is given, in which case
-# -X/-Y are relative to that window's client area.
+# -X/-Y are relative to the window screenshot (or its client area with -Client).
 
 param(
   [Parameter(Mandatory = $true)][ValidateSet('list','windows','tabs','tab','uitree','find','hit','shot','focus','activate','click','drag','type','key','keycombo','scroll','clipboard','wait','window','launch','record','video','ocr','uiact','info','overlay')][string]$Action,
@@ -38,7 +38,9 @@ param(
   [int]$Width = 0,
   [int]$Height = 0,
   [switch]$Unicode,
-  [string]$Value,
+  [string]$Value = '',
+  [ValidateSet('invoke','toggle','select','expand','value')][string]$Kind = 'invoke',
+  [string]$ValueFile,
   [string]$TextFile,
   [string]$LaunchArgsFile,
   [switch]$Park,
@@ -60,6 +62,10 @@ $ErrorActionPreference = 'Stop'
 if ($TextFile -and (Test-Path -LiteralPath $TextFile)) {
   $Text = [System.IO.File]::ReadAllText($TextFile, [System.Text.Encoding]::UTF8)
   Remove-Item -LiteralPath $TextFile -Force -ErrorAction SilentlyContinue
+}
+if ($ValueFile -and (Test-Path -LiteralPath $ValueFile)) {
+  $Value = [System.IO.File]::ReadAllText($ValueFile, [System.Text.Encoding]::UTF8)
+  Remove-Item -LiteralPath $ValueFile -Force -ErrorAction SilentlyContinue
 }
 if ($LaunchArgsFile -and (Test-Path -LiteralPath $LaunchArgsFile)) {
   $LaunchArgs = [System.IO.File]::ReadAllText($LaunchArgsFile, [System.Text.Encoding]::UTF8)
@@ -83,6 +89,10 @@ if (-not ('Cua.Native' -as [type])) {
 [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
 [DllImport("user32.dll")] public static extern bool GetWindowRect(System.IntPtr hWnd, out RECT r);
 [DllImport("user32.dll")] public static extern bool GetClientRect(System.IntPtr hWnd, out RECT r);
+[DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(System.IntPtr hWnd, int attr, out RECT rect, int size);
+[DllImport("user32.dll")] public static extern System.IntPtr WindowFromPoint(POINT point);
+[DllImport("user32.dll")] public static extern System.IntPtr GetAncestor(System.IntPtr hWnd, uint flags);
+public const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
 [DllImport("user32.dll")] public static extern bool ClientToScreen(System.IntPtr hWnd, ref POINT p);
 [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
 [DllImport("user32.dll")] public static extern bool PrintWindow(System.IntPtr hWnd, System.IntPtr hdc, uint flags);
@@ -119,7 +129,28 @@ function Focus-Window([System.IntPtr]$h) {
   if ($h -eq [System.IntPtr]::Zero) { return }
   if ([Cua.Native]::IsIconic($h)) { [void][Cua.Native]::ShowWindow($h, 9) }  # SW_RESTORE
   [void][Cua.Native]::ShowWindow($h, 5)
-  for ($i = 0; $i -lt 3; $i++) { [void][Cua.Native]::SetForegroundWindow($h); Start-Sleep -Milliseconds 60 }
+  for ($i = 0; $i -lt 3; $i++) {
+    if ([Cua.Native]::GetForegroundWindow() -eq $h) { return }
+    [void][Cua.Native]::SetForegroundWindow($h)
+    Start-Sleep -Milliseconds 60
+  }
+}
+
+function Assert-Foreground([System.IntPtr]$h) {
+  if ($h -ne [System.IntPtr]::Zero -and [Cua.Native]::GetForegroundWindow() -ne $h) {
+    throw 'TARGET_NOT_FOREGROUND: Windows did not keep the requested window in front; no input sent.'
+  }
+}
+
+function Assert-PointerTarget([System.IntPtr]$h, [int]$px, [int]$py) {
+  Assert-Foreground $h
+  if ($h -eq [System.IntPtr]::Zero) { return }
+  $p = New-Object Cua.Native+POINT
+  $p.X = $px; $p.Y = $py
+  $hit = [Cua.Native]::WindowFromPoint($p)
+  if ($hit -ne $h -and [Cua.Native]::GetAncestor($hit, 2) -ne $h) {
+    throw 'TARGET_POINT_BLOCKED: the point is outside the requested window or covered; no input sent.'
+  }
 }
 
 function Get-VisibleRect([System.IntPtr]$h) {
@@ -138,15 +169,21 @@ function Convert-Point([System.IntPtr]$h, [int]$px, [int]$py) {
   if ($h -eq [System.IntPtr]::Zero) { return @{ X = $px; Y = $py } }
   $p = New-Object Cua.Native+POINT
   $p.X = $px; $p.Y = $py
-  if ($Client) { [void][Cua.Native]::ClientToScreen($h, [ref]$p) }
+  if ($Client) { if (-not [Cua.Native]::ClientToScreen($h, [ref]$p)) { throw 'Unable to read target client origin.' } }
   else {
-    $r = Get-VisibleRect $h
+    # Match the unresized window screenshot, which includes the invisible
+    # resize frame. The visible DWM rect is exclusively for the indicator.
+    $r = New-Object Cua.Native+RECT
+    if (-not [Cua.Native]::GetWindowRect($h, [ref]$r)) { throw 'Unable to read target window bounds.' }
     $p.X = $r.Left + $px; $p.Y = $r.Top + $py
   }
   return @{ X = $p.X; Y = $p.Y }
 }
 
-function Move-To([int]$px, [int]$py) { [void][Cua.Native]::SetCursorPos($px, $py); Start-Sleep -Milliseconds $Delay }
+function Move-To([int]$px, [int]$py) {
+  if (-not [Cua.Native]::SetCursorPos($px, $py)) { throw 'Unable to move the pointer; no input sent.' }
+  Start-Sleep -Milliseconds $Delay
+}
 
 function Shot([string]$target, [System.IntPtr]$h) {
   if (-not $target) {
@@ -184,28 +221,33 @@ function Shot([string]$target, [System.IntPtr]$h) {
   Write-Output $target
 }
 
-function Send-UnicodeText([string]$value) {
+function Send-UnicodeText([string]$value, [System.IntPtr]$handle) {
   # SendInput with KEYEVENTF_UNICODE: SendKeys mangles anything outside ASCII.
   if (-not ('Cua.Keys' -as [type])) {
     Add-Type -Namespace Cua -Name Keys -MemberDefinition @'
 [StructLayout(LayoutKind.Sequential)] public struct KEYBDINPUT { public ushort wVk; public ushort wScan; public uint dwFlags; public uint time; public System.IntPtr dwExtraInfo; }
-[StructLayout(LayoutKind.Explicit, Size = 40)] public struct INPUTUNION { [FieldOffset(0)] public KEYBDINPUT ki; }
+[StructLayout(LayoutKind.Sequential)] public struct MOUSEINPUT { public int dx, dy; public uint mouseData, dwFlags, time; public System.IntPtr dwExtraInfo; }
+[StructLayout(LayoutKind.Explicit)] public struct INPUTUNION { [FieldOffset(0)] public KEYBDINPUT ki; [FieldOffset(0)] public MOUSEINPUT mi; }
 [StructLayout(LayoutKind.Sequential)] public struct INPUT { public uint type; public INPUTUNION u; }
 [DllImport("user32.dll", SetLastError = true)] public static extern uint SendInput(uint n, INPUT[] inputs, int size);
 '@
   }
   $size = [System.Runtime.InteropServices.Marshal]::SizeOf([type]'Cua.Keys+INPUT')
   foreach ($ch in $value.ToCharArray()) {
+    Assert-Foreground $handle
     $down = New-Object Cua.Keys+INPUT
-    $down.type = 1
-    $down.u.ki.wScan = [uint16][int]$ch
-    $down.u.ki.dwFlags = 0x0004
     $up = New-Object Cua.Keys+INPUT
-    $up.type = 1
-    $up.u.ki.wScan = [uint16][int]$ch
-    $up.u.ki.dwFlags = 0x0006
-    [void][Cua.Keys]::SendInput(1, @($down), $size)
-    [void][Cua.Keys]::SendInput(1, @($up), $size)
+    $down.type = 1; $up.type = 1
+    $key = New-Object Cua.Keys+KEYBDINPUT
+    $key.wScan = [uint16][int]$ch
+    $key.dwFlags = 0x0004
+    $union = New-Object Cua.Keys+INPUTUNION
+    $union.ki = $key
+    $down.u = $union
+    $key.dwFlags = 0x0006
+    $union.ki = $key
+    $up.u = $union
+    if ([Cua.Keys]::SendInput(2, @($down, $up), $size) -ne 2) { throw 'Windows rejected Unicode input.' }
     Start-Sleep -Milliseconds 3
   }
   return "typed $($value.Length) chars (unicode)"
@@ -379,18 +421,20 @@ function Select-TabItem($item, [System.IntPtr]$hwnd) {
   }
 }
 
-function Invoke-UiPattern($node, [string]$value) {
-  # UI Automation patterns act on a control WITHOUT focusing the window or
-  # moving the cursor - the only reliable "background" path for native apps.
-  $attempts = @()
-  try { $node.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke(); return 'invoke' } catch { $attempts += 'invoke' }
-  try { $node.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle(); return 'toggle' } catch { $attempts += 'toggle' }
-  try { $node.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select(); return 'select' } catch { $attempts += 'select' }
-  try { $node.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Expand(); return 'expand' } catch { $attempts += 'expand' }
-  if ($value) {
-    try { $node.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($value); return 'value' } catch { $attempts += 'value' }
+function Invoke-UiPattern($node, [string]$kind, [string]$value) {
+  try {
+    switch ($kind) {
+      'invoke' { $node.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke() }
+      'toggle' { $node.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle() }
+      'select' { $node.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select() }
+      'expand' { $node.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Expand() }
+      'value' { $node.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($value) }
+      default { throw "Unknown UI Automation action: $kind" }
+    }
+  } catch {
+    throw "UI_PATTERN_FAILED: requested '$kind' did not complete: $($_.Exception.Message)"
   }
-  return 'unsupported'
+  return $kind
 }
 function Get-UiNodes([System.IntPtr]$hwnd, [int]$maxDepth = 6) {
   Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes -ErrorAction Stop
@@ -431,7 +475,9 @@ function Invoke-UiNode($node, [System.IntPtr]$hwnd) {
   Focus-Window $hwnd
   Start-Sleep -Milliseconds 100
   $cx = [int]($node.x + $node.w / 2); $cy = [int]($node.y + $node.h / 2)
+  Assert-PointerTarget $hwnd $cx $cy
   Move-To $cx $cy
+  Assert-PointerTarget $hwnd $cx $cy
   [void][Cua.Native]::mouse_event([Cua.Native]::LBUTTONDOWN, 0, 0, 0, [UIntPtr]::Zero)
   Start-Sleep -Milliseconds 40
   [void][Cua.Native]::mouse_event([Cua.Native]::LBUTTONUP, 0, 0, 0, [UIntPtr]::Zero)
@@ -461,20 +507,13 @@ function Assert-Target([System.IntPtr]$handle) {
 if ($explicitTarget -and $h -eq [System.IntPtr]::Zero -and $Action -notin @('wait')) {
   Assert-Target $h
 }
-# Machine-readable geometry for the on-screen overlay (frame + click marker). The
-# agent side turns this line into an overlay process and strips it from the reply.
-if ($Overlay -and $h -ne [System.IntPtr]::Zero) {
-  try {
-    $overlayRect = New-Object Cua.Native+RECT
-    [void][Cua.Native]::GetWindowRect($h, [ref]$overlayRect)
-    $overlayClick = ''
-    if ($Action -in @('click','drag','scroll')) {
-      $sx = $overlayRect.Left + $X
-      $sy = $overlayRect.Top + $Y
-      $overlayClick = " click=$sx,$sy"
-    }
-    "[overlay] hwnd=$($h.ToInt64()) rect=$($overlayRect.Left),$($overlayRect.Top),$($overlayRect.Right),$($overlayRect.Bottom)$overlayClick"
-  } catch {}
+# Publish the same absolute point used by the real input, not a second
+# calculation from the window origin before it was restored.
+function Write-OverlayGeometry([System.IntPtr]$handle, $point = $null) {
+  if (-not $Overlay -or $handle -eq [System.IntPtr]::Zero) { return }
+  $rect = Get-VisibleRect $handle
+  $pos = if ($null -ne $point) { " click=$($point.X),$($point.Y)" } else { '' }
+  "[overlay] hwnd=$($handle.ToInt64()) rect=$($rect.Left),$($rect.Top),$($rect.Right),$($rect.Bottom)$pos"
 }
 
 switch ($Action) {
@@ -492,10 +531,29 @@ switch ($Action) {
     if (Test-Path -LiteralPath $pidFile) {
       $existing = 0
       [void][int]::TryParse((Get-Content -LiteralPath $pidFile -Raw).Trim(), [ref]$existing)
-      if ($existing -gt 0) { $running = [bool](Get-Process -Id $existing -ErrorAction SilentlyContinue) }
+      if ($existing -gt 0) {
+        $previous = Get-Process -Id $existing -ErrorAction SilentlyContinue
+        if ($previous -and $previous.ProcessName -eq 'powershell') {
+          try {
+            $cmd = (Get-CimInstance Win32_Process -Filter "ProcessId=$existing" -ErrorAction Stop).CommandLine
+            $escaped = [Regex]::Escape([IO.Path]::GetFullPath($Script))
+            if ($cmd -match ('-File\s+(?:"' + $escaped + '"|' + $escaped + ')(?:\s|$)')) {
+              $running = $true
+              $stampFile = Join-Path $env:TEMP 'dsh-cua-overlay.build'
+              $stamped = 0L
+              if ((Test-Path -LiteralPath $stampFile) -and
+                  [long]::TryParse((Get-Content -Raw -LiteralPath $stampFile).Trim(), [ref]$stamped) -and
+                  $stamped -ne [IO.File]::GetLastWriteTimeUtc($Script).Ticks) {
+                $previous.Kill()
+                $running = -not $previous.WaitForExit(1000)
+              }
+            }
+          } catch { $running = $true }
+        }
+      }
     }
     if (-not $running) {
-      Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$Script) -WindowStyle Hidden | Out-Null
+      Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',("`"${Script}`"")) -WindowStyle Hidden | Out-Null
       Start-Sleep -Milliseconds 250
     }
     "overlay: " + $(if ($running) { 'already running' } else { 'started' })
@@ -600,9 +658,8 @@ switch ($Action) {
     if ($h -eq [System.IntPtr]::Zero) { throw '-Window or -ProcessId is required' }
     if (-not $Text) { throw '-Text is required' }
     $node = Find-UiNode $h $Text | Select-Object -First 1
-    if (-not $node) { "no element matching '$Text'" }
+    if (-not $node) { throw "no element matching '$Text'" }
     else {
-      $nodes = Get-UiNodes $h 12 | Where-Object { $_.name -like "*$Text*" -and -not $_.off }
       $raw = $null
       try {
         Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes -ErrorAction Stop
@@ -610,7 +667,7 @@ switch ($Action) {
         $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, $node.name)
         $raw = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cond)
       } catch {}
-      if ($raw) { "pattern: " + (Invoke-UiPattern $raw $value) } else { "no raw element for '$Text'" }
+      if ($raw) { "pattern: " + (Invoke-UiPattern $raw $Kind $Value) } else { throw "no raw element for '$Text'" }
     }
   }
   'shot' {
@@ -726,52 +783,71 @@ switch ($Action) {
     "sent combo $Text"
   }
   'click' {
+    Focus-Window $h
+    Assert-Foreground $h
     $pt = Convert-Point $h $X $Y
-    if ($h -ne [System.IntPtr]::Zero) { Focus-Window $h; Start-Sleep -Milliseconds 80 }
+    Assert-PointerTarget $h $pt.X $pt.Y
     Move-To $pt.X $pt.Y
+    Assert-PointerTarget $h $pt.X $pt.Y
+    Write-OverlayGeometry $h $pt
     $down = if ($Right) { [Cua.Native]::RBUTTONDOWN } else { [Cua.Native]::LBUTTONDOWN }
     $up = if ($Right) { [Cua.Native]::RBUTTONUP } else { [Cua.Native]::LBUTTONUP }
     [void][Cua.Native]::mouse_event($down, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 40
     [void][Cua.Native]::mouse_event($up, 0, 0, 0, [UIntPtr]::Zero)
-    if ($Double) { Start-Sleep -Milliseconds 60; [void][Cua.Native]::mouse_event($down, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 40; [void][Cua.Native]::mouse_event($up, 0, 0, 0, [UIntPtr]::Zero) }
+    if ($Double) { Start-Sleep -Milliseconds 60; Assert-PointerTarget $h $pt.X $pt.Y; [void][Cua.Native]::mouse_event($down, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 40; [void][Cua.Native]::mouse_event($up, 0, 0, 0, [UIntPtr]::Zero) }
     "clicked $($pt.X),$($pt.Y)"
   }
   'drag' {
+    Focus-Window $h
+    Assert-Foreground $h
     $a = Convert-Point $h $X $Y
     $b = Convert-Point $h $X2 $Y2
-    if ($h -ne [System.IntPtr]::Zero) { Focus-Window $h; Start-Sleep -Milliseconds 80 }
+    Assert-PointerTarget $h $a.X $a.Y
+    Assert-PointerTarget $h $b.X $b.Y
     Move-To $a.X $a.Y
+    Assert-PointerTarget $h $a.X $a.Y
+    Write-OverlayGeometry $h $a
     [void][Cua.Native]::mouse_event([Cua.Native]::LBUTTONDOWN, 0, 0, 0, [UIntPtr]::Zero)
-    Start-Sleep -Milliseconds 60
-    for ($i = 1; $i -le $Steps; $i++) {
-      $px = [int]($a.X + ($b.X - $a.X) * $i / $Steps)
-      $py = [int]($a.Y + ($b.Y - $a.Y) * $i / $Steps)
-      [void][Cua.Native]::SetCursorPos($px, $py)
-      Start-Sleep -Milliseconds $Delay
+    try {
+      Start-Sleep -Milliseconds 60
+      for ($i = 1; $i -le $Steps; $i++) {
+        Assert-Foreground $h
+        $px = [int]($a.X + ($b.X - $a.X) * $i / $Steps)
+        $py = [int]($a.Y + ($b.Y - $a.Y) * $i / $Steps)
+        Move-To $px $py
+      }
+    } finally {
+      [void][Cua.Native]::mouse_event([Cua.Native]::LBUTTONUP, 0, 0, 0, [UIntPtr]::Zero)
     }
-    Start-Sleep -Milliseconds 40
-    [void][Cua.Native]::mouse_event([Cua.Native]::LBUTTONUP, 0, 0, 0, [UIntPtr]::Zero)
     "dragged $($a.X),$($a.Y) -> $($b.X),$($b.Y)"
   }
   'type' {
     if ($Text) {
       # With a window target, focus it first so the text lands in the right app;
       # without one the keys go to whatever is focused (whole-screen consent).
-      if ($h -ne [System.IntPtr]::Zero) { Focus-Window $h; Start-Sleep -Milliseconds 80 }
-      if ($Unicode) { Send-UnicodeText $Text }
+      Focus-Window $h
+      Assert-Foreground $h
+      Write-OverlayGeometry $h
+      if ($Unicode) { Send-UnicodeText $Text $h }
       else { [System.Windows.Forms.SendKeys]::SendWait($Text); "typed $($Text.Length) chars" }
     }
   }
   'key' {
     if ($Text) {
-      if ($h -ne [System.IntPtr]::Zero) { Focus-Window $h; Start-Sleep -Milliseconds 80 }
+      Focus-Window $h
+      Assert-Foreground $h
+      Write-OverlayGeometry $h
       [System.Windows.Forms.SendKeys]::SendWait($Text); "sent $Text"
     }
   }
   'scroll' {
+    Focus-Window $h
+    Assert-Foreground $h
     $pt = Convert-Point $h $X $Y
-    if ($h -ne [System.IntPtr]::Zero) { Focus-Window $h }
+    Assert-PointerTarget $h $pt.X $pt.Y
     Move-To $pt.X $pt.Y
+    Assert-PointerTarget $h $pt.X $pt.Y
+    Write-OverlayGeometry $h $pt
     [void][Cua.Native]::mouse_event([Cua.Native]::WHEEL, 0, 0, $Delta, [UIntPtr]::Zero)
     "scrolled $Delta at $($pt.X),$($pt.Y)"
   }

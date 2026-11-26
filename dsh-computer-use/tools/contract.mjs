@@ -46,7 +46,7 @@ function makeContext() {
 console.log('contract');
 check('module exports apply', typeof apply === 'function');
 check('module exports inject list', Array.isArray(inject));
-check('tool catalogue non-empty', TOOLS.length === 20, `${TOOLS.length}`);
+check('tool catalogue non-empty', TOOLS.length === 19, `${TOOLS.length}`);
 
 const { ctx, registered, effects, injections } = makeContext();
 const applyDisposer = apply(ctx, {});

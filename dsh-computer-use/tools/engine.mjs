@@ -10,14 +10,23 @@ import { join } from 'node:path';
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const ENGINE = fileURLToPath(new URL('./cua.ps1', import.meta.url));
 
-function run(command, args, { timeoutMs = 30000 } = {}) {
+function run(command, args, { timeoutMs = 30000, onLine } = {}) {
   return new Promise((resolve) => {
     const child = spawn(command, args, { windowsHide: true });
     let stdout = '';
     let stderr = '';
     let timer = setTimeout(() => { try { child.kill(); } catch {} }, timeoutMs);
-    child.stdout.on('data', (chunk) => { stdout += chunk.toString('utf8'); });
-    child.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
+    let lineBuffer = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+      if (!onLine) return;
+      const lines = (lineBuffer + chunk).split('\n');
+      lineBuffer = lines.pop();
+      for (const line of lines) { try { onLine(line.trimEnd()); } catch {} }
+    });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
     child.on('error', (error) => {
       clearTimeout(timer);
       resolve({ ok: false, text: `spawn failed: ${error.message}` });
@@ -44,15 +53,15 @@ function argv(options = {}) {
   return args;
 }
 
-export async function engine(options) {
+export async function engine(options, hooks) {
   // Free text goes through a UTF-8 file: quotes, backticks and semicolons then
   // survive any Windows/PowerShell command-line parsing untouched.
   const args = { ...options };
   let scratch = null;
   let usedScratch = false;
-  for (const [key, fileKey] of [['Text', 'TextFile'], ['LaunchArgs', 'LaunchArgsFile']]) {
+  for (const [key, fileKey] of [['Text', 'TextFile'], ['LaunchArgs', 'LaunchArgsFile'], ['Value', 'ValueFile']]) {
     const value = args[key];
-    if (typeof value !== 'string' || value.length === 0) continue;
+    if (typeof value !== 'string' || (value.length === 0 && key !== 'Value')) continue;
     scratch = scratch || mkdtempSync(join(tmpdir(), 'dsh-cua-'));
     const file = join(scratch, `${key.toLowerCase()}.txt`);
     writeFileSync(file, value, { encoding: 'utf8' });
@@ -61,7 +70,7 @@ export async function engine(options) {
     usedScratch = true;
   }
   try {
-    return await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ENGINE, ...argv(args)]);
+    return await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ENGINE, ...argv(args)], hooks);
   } finally {
     // The engine consumes the files; remove the directory so repeated calls do
     // not litter the temp folder.
