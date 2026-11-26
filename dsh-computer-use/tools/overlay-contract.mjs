@@ -58,3 +58,53 @@ writeFileSync(join(tmpdir(), 'dsh-cua-stop.json'), JSON.stringify({ at: Date.now
 assert.match((await click.execute({ x: 30, y: 40, user_ready: true })).text, /^STOPPED/);
 assert.equal(calls, 3);
 console.log('PASS: consent, geometry streaming, target isolation, linger, error, STOP');
+
+// Exercise two overlapping calls against the registered tool wrappers, not
+// just the state writer. Keep the drag open while a different call finishes.
+let releaseDrag, dragStarted, oldGeometry;
+const dragging = new Promise(resolve => { releaseDrag = resolve; });
+const ready = new Promise(resolve => { dragStarted = resolve; });
+let competingCalls = 0;
+globalThis.dshTestEngine = async (opts, hooks) => {
+  if (opts.action === 'overlay') return { ok: true, text: 'started' };
+  if (opts.Action === 'drag') {
+    oldGeometry = hooks.onLine;
+    oldGeometry(marker);
+    dragStarted();
+    await dragging;
+    return { ok: false, text: 'STOPPED' };
+  }
+  if (opts.Action === 'windows') return { ok: true, text: 'Fixture' };
+  competingCalls++;
+  return { ok: true, text: 'clicked' };
+};
+const drag = tools.get('computer_drag');
+const moving = drag.execute({ window: 'Fixture', x: 100, y: 16, x2: 120, y2: 36 });
+await ready;
+const active = state();
+assert.equal(active.target.hwnd, 122);
+assert.ok(active.stopToken);
+writeFileSync(join(tmpdir(), 'dsh-cua-stop.json'), JSON.stringify({ at: Date.now() }));
+assert.equal((await tools.get('computer_windows').execute({})).ok, true);
+assert.deepEqual(state(), active, 'window list cannot redraw or clear the active drag');
+assert.match((await click.execute({ window: 'Fixture', x: 10, y: 20 })).text, /^BUSY/);
+assert.equal(competingCalls, 0, 'overlapping input cannot reach the worker');
+assert.deepEqual(state(), active, 'competing input must not replace the Escape token');
+releaseDrag();
+await moving;
+assert.equal(state().ttlMs, 0);
+assert.match((await click.execute({ window: 'Fixture', x: 10, y: 20 })).text, /^STOPPED/,
+  'the next idle call reports Escape, which the observer did not consume');
+
+globalThis.dshTestEngine = async (opts, hooks) => {
+  if (opts.action === 'overlay') return { ok: true, text: 'started' };
+  hooks.onLine('[overlay] hwnd=404 rect=0,0,100,100');
+  const newer = state();
+  assert.equal(newer.target.hwnd, 404);
+  assert.notEqual(newer.stopToken, active.stopToken);
+  oldGeometry(marker);
+  assert.deepEqual(state(), newer, 'a stale driver callback cannot paint over the new input');
+  return { ok: true, text: 'clicked' };
+};
+assert.equal((await click.execute({ window: 'Fixture', x: 10, y: 20 })).ok, true);
+console.log('PASS: passive overlap, exclusive input, stale geometry callback');

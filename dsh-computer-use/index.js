@@ -245,6 +245,11 @@ function stopRequested() {
 // Screen-wide input (no window/pid) needs the user's go-ahead: the overlay banner
 // says so, and the tool refuses until the agent confirmed it with the user.
 const SCREEN_INPUT_TOOLS = new Set(['computer_click', 'computer_drag', 'computer_type', 'computer_key', 'computer_scroll']);
+const DESKTOP_MUTATIONS = new Set([...SCREEN_INPUT_TOOLS,
+  'computer_focus', 'computer_tab', 'computer_window', 'computer_launch', 'computer_ui_action']);
+// Agent steps serialize their own siblings, but there may be multiple sessions
+// in this host. Only the active writer owns the indicator and its Escape token.
+let activeInputToken;
 
 
 // ------------------------------------------------------------------ system prompt
@@ -561,9 +566,14 @@ export function apply(ctx, config = {}) {
               // Whole-screen input and a fresh ESC stop both require the user's consent.
               const screenWide = SCREEN_INPUT_TOOLS.has(spec.name) && !args.window && !args.pid;
               const consent = args.user_ready === true;
-              // The stop is consumed first and always reported: otherwise a call
-              // with user_ready silently swallowed the ESC the user pressed.
-              if (stopRequested()) {
+              const changesDesktop = DESKTOP_MUTATIONS.has(spec.name) ||
+                (spec.name === 'computer_clipboard' && typeof args.text === 'string' && args.text.length > 0);
+              if (changesDesktop && activeInputToken) {
+                return { ok: false, text: 'BUSY: a desktop action is already running. Wait for it to finish before issuing another input.' };
+              }
+              // A concurrent observer must not consume the active action’s
+              // stop notice. When idle, report it even with user_ready set.
+              if (!activeInputToken && stopRequested()) {
                 return {
                   ok: false,
                   text: 'STOPPED: the user pressed ESC and cancellation was requested for the running action. Check with the user before continuing (retry with user_ready: true only after they agree).'
@@ -579,11 +589,8 @@ export function apply(ctx, config = {}) {
               // Do not carry a previous target or desktop banner into a new call.
               const point = Number.isFinite(args.x) && Number.isFinite(args.y) ? `${args.x},${args.y}` : '';
               const caption = captionFor(spec.name, args);
-              const stopToken = CUA_OVERLAY ? randomUUID() : undefined;
-              if (CUA_OVERLAY) {
-                pushOverlay(0, '', screenWide ? point : '', screenWide ? caption : '', screenWide ? 'screen' : 'window', OVERLAY_TTL_MS, stopToken);
-                await ensureOverlay();
-              }
+              const stopToken = CUA_OVERLAY && changesDesktop ? randomUUID() : undefined;
+              const ownsOverlay = () => !!stopToken && activeInputToken === stopToken;
               const call = spec.run(args || {});
               const engineArgs = {};
               for (const [key, value] of Object.entries(call)) {
@@ -591,20 +598,25 @@ export function apply(ctx, config = {}) {
                 const name = key === 'depth' ? 'Delta' : key.charAt(0).toUpperCase() + key.slice(1);
                 engineArgs[name] = value;
               }
-              engineArgs.Overlay = CUA_OVERLAY;
+              engineArgs.Overlay = !!stopToken;
               engineArgs.StopToken = stopToken;
               let result;
+              if (stopToken) activeInputToken = stopToken;
               try {
+                if (ownsOverlay()) {
+                  pushOverlay(0, '', screenWide ? point : '', screenWide ? caption : '', screenWide ? 'screen' : 'window', OVERLAY_TTL_MS, stopToken);
+                  await ensureOverlay();
+                }
                 result = await engine(engineArgs, {
                   onLine: (line) => {
                     const geometry = stripOverlay(line);
-                    if (CUA_OVERLAY && geometry.rect) pushOverlay(geometry.hwnd, geometry.rect, geometry.click, caption, 'window', OVERLAY_TTL_MS, stopToken);
+                    if (ownsOverlay() && geometry.rect) pushOverlay(geometry.hwnd, geometry.rect, geometry.click, caption, 'window', OVERLAY_TTL_MS, stopToken);
                   },
                 });
               } finally {
                 const parsed = stripOverlay(result?.text);
                 if (result && parsed.rect) result.text = parsed.text;
-                if (CUA_OVERLAY) {
+                if (ownsOverlay()) {
                   if (result?.ok && parsed.rect) {
                     pushOverlay(parsed.hwnd, parsed.rect, parsed.click, caption, 'window', OVERLAY_LINGER_MS);
                   } else {
@@ -612,6 +624,7 @@ export function apply(ctx, config = {}) {
                     pushOverlay(0, '', '', '', 'window', 0);
                   }
                   try { unlinkSync(join(process.env.TEMP || tmpdir(), `dsh-cua-stop-${stopToken}.signal`)); } catch {}
+                  activeInputToken = undefined;
                 }
               }
               try {

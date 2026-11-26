@@ -62,6 +62,12 @@ by Node while the button is down. The portable PowerShell contract simulates
 Escape and a deadline after mouse-down and checks that mouse-up happens exactly
 once. If a native call stalls, cancellation cannot take effect until it returns.
 
+In one DSH host, read-only tools do not change the active input indicator or
+consume its Escape notice. A second desktop mutation gets BUSY until the first
+one finishes. The portable test overlaps a window list with a drag and checks
+stale geometry callbacks. Separate host processes are not coordinated by this
+guard; the shared overlay on a real Windows desktop still needs an overlap test.
+
 The indicator receives geometry before dispatch, but WPF renders asynchronously.
 Check frame-to-click timing on the Windows fixture rather than assuming the halo
 is already visible when a click lands.
