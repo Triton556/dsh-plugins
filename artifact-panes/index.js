@@ -25,7 +25,6 @@ const dshHomePath = (() => {
 const logDir = dshHomePath ? dshHomePath + '/.dsh/artifact-panes' : ''
 const bootLog = logDir ? logDir + '/host-load.log' : ''
 const dividerDiagLog = logDir ? logDir + '/divider-diag.log' : ''
-const dividerAuthFile = process.env.TEMP + '/dsh-gui-auth.json'
 if (logDir) {
   try { mkdirSync(logDir, { recursive: true }) } catch (error) { console.error('[artifact-panes:host-load] log-dir-failed', error?.code || 'UNKNOWN') }
 }
@@ -835,25 +834,6 @@ export function apply(ctx) {
       sendJson(res, 200, { ok: true, n: dividerSelfTestRequest })
     },
   }), 'artifact-panes: divider selftest trigger')
-  // Temporary: capture the GUI launch URL/cookie so an external Chromium can be
-  // authenticated against the same host (profiling the GUI over CDP). The file
-  // is deleted by the caller and never logged.
-  ctx.effect(() => webServer.register({
-    kind: 'exact',
-    path: '/artifact-panes/gui-auth',
-    handler: async (req, res) => {
-      if (req.method !== 'POST') { sendJson(res, 405, { ok: false, error: 'method not allowed' }); return }
-      const chunks = []
-      let size = 0
-      for await (const chunk of req) {
-        size += chunk.length
-        if (size > 16 * 1024) { sendJson(res, 413, { ok: false, error: 'payload is too large' }); return }
-        chunks.push(chunk)
-      }
-      try { writeFileSync(dividerAuthFile, Buffer.concat(chunks).toString('utf8'), { mode: 0o600 }) } catch (e) {}
-      sendJson(res, 200, { ok: true })
-    },
-  }), 'artifact-panes: gui auth probe')
   ctx.effect(() => webServer.register({
     kind: 'exact',
     path: '/artifact-panes/divider-diag',
