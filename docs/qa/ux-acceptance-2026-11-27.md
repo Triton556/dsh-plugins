@@ -2,7 +2,7 @@
 
 Scope: disposable local fixtures with no personal account, browser profiles, or external model traffic.
 The shipped code was tested on Linux plus Chrome Headless Shell 149.0.7827.22 and DSH Web 0.2.3-alpha.2.
-Native Windows Computer Use and the installed Chrome MV3/native-host connection are separate acceptance gates.
+The table below describes the original Linux lab. The separate Windows follow-up is documented underneath.
 
 | Plugin | What was verified here | Not verified here |
 | --- | --- | --- |
@@ -16,6 +16,14 @@ Native Windows Computer Use and the installed Chrome MV3/native-host connection 
 - [Computer Use portable results](evidence/2026-11-27/computer-use.txt) and [video contact sheet](evidence/2026-11-27/computer-use-reel-frames.jpg). The contact sheet is an explanation of the results, not filmed Windows UI.
 - [Artifact Panes live checks](evidence/2026-11-27/artifact-panes.json) and [real annotation send](evidence/2026-11-27/artifact-panes-send.jpg). The fake loopback provider never contacted an external model. A later round [verified picker restoration](evidence/2026-11-27/artifact-picker-return.json), including independently selected files in A/B and removal of the selected file, without retaining the previous iframe.
 
+## Native Windows follow-up
+
+[Windows Server 2025 run #5](https://github.com/Triton556/dsh-plugins/actions/runs/45937209348/job/140303071385) tested `f48af7c2e8ea96a805b9fe24cd56454cbae95399` with one interactive 1024×768 display. It used synthetic pages and windows, a fresh Chrome for Testing 149.0.7827.22 profile and no personal accounts or model calls.
+
+- **Browser Bridge:** the real MV3 worker launched the built C# host via native messaging with the installed registry entry. Requests used the shipped Bridge CLI over the real Windows named pipe. An actual trusted click reached A once, never B. An empty value cleared A only. The foreground PNG, stale-index rejection after navigation, release, and reconnection after browser restart passed. This does not test the full installed DSH tool invocation.
+- **Computer Use:** the real PowerShell engine clicked a WinForms button exactly once in A, never B; a 70×50 window-relative crop had the expected color. An independent layered desktop capture measured the real blue WPF border (blue channel 0 to 89) without stealing focus. During a real drag, an automated Escape key event made the WPF daemon signal cancellation. The worker exited as stopped, Windows reported the mouse button released, and the frame disappeared. This tested one display and used a synthetic overlay state rather than the complete DSH Desktop orchestration.
+- **Open defect:** `Page.captureScreenshot` on an inactive tab passed once but timed out at 25 seconds in two other headed Chrome runs. [Passing background sample](https://github.com/Triton556/dsh-plugins/actions/runs/45936848010) · [timed-out sample](https://github.com/Triton556/dsh-plugins/actions/runs/45937016917). Run #5 logs the background failure as an open release gate rather than failing unrelated foreground/native acceptance. Until addressed, activate the intended tab yourself before asking for a capture. Do not silently focus a different tab or fall back to its pixels.
+
 ## Further UX work
 
 1. **Browser Bridge:** show connection health by layer, require snapshot generation with AX indices, and report whether expected postconditions were observed after input. An uncertain outcome must not cause the action to be replayed.
@@ -27,5 +35,5 @@ These proposals are not implemented as new features here. See the [portable veri
 ## Required before merge
 
 - Use a disposable Windows 11 VM with an unlocked interactive desktop, not just a service or a build runner. Use a new Chrome profile with no accounts, load the unpacked extension and register the native host there. Repeat the two-tab fixture through DSH's installed Bridge and verify reconnects, the Chrome attachment notice, and no replay after lost acknowledgement.
-- Use two disposable Windows windows with different counter targets. Validate the blue border and pointer timing before, during and after real dispatch, foreground refusal and overlap, Esc in the middle of drag, no stuck mouse button, screenshot and OCR, and 100%/150% DPI on two displays including negative origin. Record using independent desktop capture, not just a window-only video.
+- Use two disposable Windows windows with different counter targets. Validate the blue border and pointer timing before, during and after real dispatch, foreground refusal and overlap, physical Escape in the middle of a drag (the automated key path passed separately), screenshot and OCR, and 100%/150% DPI on two displays including negative origin. Record using independent desktop capture, not just a window-only video.
 - Reproduce the live Artifact Panes workflow in the Windows desktop host, including screenshot attachment and the chat-switch capture guard; distinguish a saved draft from actual submission. Use a fake local model endpoint. Do not frame the Linux recording as Windows evidence.
