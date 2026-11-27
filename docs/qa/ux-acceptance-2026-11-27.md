@@ -24,6 +24,20 @@ The table below describes the original Linux lab. The separate Windows follow-up
 - **Computer Use:** the real PowerShell engine clicked a WinForms button exactly once in A, never B; a 70×50 window-relative crop had the expected color. An independent layered desktop capture measured the real blue WPF border (blue channel 0 to 89) without stealing focus. During a real drag, an automated Escape key event made the WPF daemon signal cancellation. The worker exited as stopped, Windows reported the mouse button released, and the frame disappeared. This tested one display and used a synthetic overlay state rather than the complete DSH Desktop orchestration.
 - **Open defect:** `Page.captureScreenshot` on an inactive tab passed once but timed out at 25 seconds in two other headed Chrome runs. [Passing background sample](https://github.com/Triton556/dsh-plugins/actions/runs/45936848010) · [timed-out sample](https://github.com/Triton556/dsh-plugins/actions/runs/45937016917). Run #5 logs the background failure as an open release gate rather than failing unrelated foreground/native acceptance. Until addressed, activate the intended tab yourself before asking for a capture. Do not silently focus a different tab or fall back to its pixels.
 
+### Inactive screenshot recovery
+
+[Windows run #6](https://github.com/Triton556/dsh-plugins/actions/runs/45942229239/job/140318892953) on `a62e83c` decoded and checked the pixels, not just the PNG header:
+
+| Scenario | Measured result |
+| --- | --- |
+| Active A before/after recoloring | Correct original/current pixels, 102/99 ms |
+| A shown, then B selected | Actionable refusal in 2,086 ms; no file and no tab switch |
+| A separate tab opened without selection | Correct pixels in 129 ms; no tab switch |
+
+The extension now bounds the capture command (2 s inactive, 6 s active), rejects loading or unloaded pages without activating them, and verifies the same tab/document before returning pixels. A same-URL reload and a tab switch during capture are covered by extension regression tests. All nine extension tests passed on Windows; 24/24 combined portable Node tests passed locally. The prior WPF/drag/Escape fixture also passed again.
+
+A quick refusal with a manual recovery is intentional when Chrome cannot render that tab. This is not a guarantee that all inactive tabs can be captured. Retest this contract through the installed DSH host and retail Chrome before production acceptance.
+
 ## Further UX work
 
 1. **Browser Bridge:** show connection health by layer, require snapshot generation with AX indices, and report whether expected postconditions were observed after input. An uncertain outcome must not cause the action to be replayed.
