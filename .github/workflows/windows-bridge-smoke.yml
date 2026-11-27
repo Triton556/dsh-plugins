@@ -1,0 +1,189 @@
+name: Windows Browser Bridge smoke (QA branch only)
+on:
+  push:
+    branches: ['qa/plugin-reliability-2026-11-26']
+    paths: ['.github/workflows/windows-bridge-smoke.yml']
+permissions: {}
+jobs:
+  native-bridge:
+    if: github.repository == 'Triton556/dsh-plugins'
+    runs-on: windows-2025
+    timeout-minutes: 12
+    steps:
+      - name: Check out the exact public QA commit
+        shell: pwsh
+        run: |
+          git init .
+          if ($LASTEXITCODE -ne 0) { throw 'git init failed' }
+          git fetch --depth 1 https://github.com/Triton556/dsh-plugins.git $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { throw 'git fetch failed' }
+          git checkout --detach FETCH_HEAD
+          if ($LASTEXITCODE -ne 0 -or (git rev-parse HEAD) -ne $env:GITHUB_SHA) { throw 'wrong checkout' }
+      - name: Build and register on the disposable runner
+        shell: pwsh
+        working-directory: dsh-browser-bridge
+        run: |
+          if (Test-Path host/NativeHost.exe) { throw 'expected a clean build' }
+          powershell.exe -NoProfile -File build.ps1
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path host/NativeHost.exe)) { throw 'native host build failed' }
+          powershell.exe -NoProfile -File install-host.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'native host registration failed' }
+      - name: Test the real extension and native messaging transport on loopback
+        shell: pwsh
+        run: |
+          $lab = Join-Path $env:RUNNER_TEMP 'dsh-bridge-smoke'
+          New-Item -ItemType Directory -Path $lab | Out-Null
+          Set-Location $lab
+          $env:PUPPETEER_CACHE_DIR = Join-Path $lab 'chrome-cache'
+          node --version
+          npm install --no-audit --no-fund --ignore-scripts --save-exact puppeteer@25.1.0
+          if ($LASTEXITCODE -ne 0) { throw 'Puppeteer setup failed' }
+          npx --no-install puppeteer browsers install chrome@149.0.7827.22
+          if ($LASTEXITCODE -ne 0) { throw 'Chrome for Testing download failed' }
+          @'
+          import assert from 'node:assert/strict';
+          import { execFile, spawn } from 'node:child_process';
+          import { readFile, mkdtemp, rm, stat } from 'node:fs/promises';
+          import { createServer } from 'node:http';
+          import { tmpdir } from 'node:os';
+          import { join, resolve } from 'node:path';
+          import { setTimeout as delay } from 'node:timers/promises';
+          import { promisify } from 'node:util';
+          import puppeteer from 'puppeteer';
+          
+          const root = resolve(process.env.GITHUB_WORKSPACE, 'dsh-browser-bridge');
+          const run = promisify(execFile);
+          const tmp = await mkdtemp(join(tmpdir(), 'bridge-fixture-'));
+          const bridge = join(root, 'bridge.mjs');
+          const expected = (await readFile(join(root, 'extension-id.txt'), 'utf8')).split('=')[1].trim();
+          assert.match(expected, /^[a-p]{32}$/);
+          const counts = { a: [], b: [] };
+          const server = createServer((req, res) => {
+            const path = new URL(req.url, 'http://localhost').pathname;
+            if (path === '/event/a' || path === '/event/b') {
+              const url = new URL(req.url, 'http://localhost');
+              counts[path.at(-1)].push(url.searchParams.get('trusted'));
+              res.writeHead(204).end();
+              return;
+            }
+            const variant = path === '/qa-bridge/a' ? 'a' : path === '/qa-bridge/b' ? 'b' : 'next';
+            res.setHeader('Content-Type', 'text/html; charset=UTF-8');
+            res.end('<!doctype html><title>Bridge fixture</title><label for="value">Fixture value</label>' +
+              '<input id="value" value="initial"><button>Count click</button>' +
+              '<script>document.querySelector("button").onclick = e => fetch("/event/' + variant +
+              '?trusted=" + e.isTrusted);</script>');
+          });
+          await new Promise((yes, no) => {
+            server.once('error', no);
+            server.listen(0, '127.0.0.1', yes);
+          });
+          const base = 'http://127.0.0.1:' + server.address().port + '/qa-bridge/';
+          let browser;
+          async function send(cmd, args = {}) {
+            return await new Promise((yes, no) => {
+              const child = spawn(process.execPath, [bridge], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+              let out = '', err = '';
+              const timer = setTimeout(() => child.kill(), 12000);
+              child.stdout.setEncoding('utf8').on('data', x => out += x);
+              child.stderr.setEncoding('utf8').on('data', x => err += x);
+              child.on('error', e => { clearTimeout(timer); no(e); });
+              child.stdin.on('error', () => {});
+              child.on('close', code => {
+                clearTimeout(timer);
+                try {
+                  const reply = JSON.parse(out);
+                  assert.equal(code, reply.ok ? 0 : 1, cmd + ' inconsistent exit code');
+                  yes(reply);
+                } catch (e) {
+                  no(new Error(cmd + ' did not receive a valid reply (exit ' + code + '): ' + err.trim(), { cause: e }));
+                }
+              });
+              child.stdin.end(JSON.stringify({ cmd, args }));
+            });
+          }
+          async function call(cmd, args) {
+            const reply = await send(cmd, args);
+            assert.equal(reply.ok, true, cmd + ': ' + reply.error);
+            return reply.data;
+          }
+          async function negative(cmd, args, pattern) {
+            const reply = await send(cmd, args);
+            assert.equal(reply.ok, false, cmd + ' unexpectedly succeeded');
+            assert.match(reply.error, pattern);
+          }
+          async function until(fn, label) {
+            let last;
+            const end = Date.now() + 20000;
+            do {
+              try { return await fn(); } catch (e) { last = e; }
+              await delay(300);
+            } while (Date.now() < end);
+            throw new Error(label + ': ' + last?.message, { cause: last });
+          }
+          async function launch(profile) {
+            browser = await puppeteer.launch({
+              headless: true, pipe: true, enableExtensions: true, timeout: 30000,
+              userDataDir: join(tmp, profile),
+              args: ['--no-first-run', '--disable-background-networking', '--no-default-browser-check'],
+            });
+            assert.match(await browser.version(), /149\.0\.7827\.22/);
+            const ext = await browser.installExtension(join(root, 'extension'));
+            assert.equal(ext, expected, 'installed extension ID differs from host allowlist');
+            const work = await browser.waitForTarget(t => t.type() === 'service_worker' &&
+              t.url() === 'chrome-extension://' + ext + '/background.js', { timeout: 15000 });
+            assert.ok(work, 'MV3 worker not found');
+            const ping = await until(() => call('ping'), 'MV3 worker could not reach Windows host / named pipe');
+            assert.equal(ping.host, 'com.dsh.browser');
+          }
+          try {
+            await launch('first');
+            const check = await run('powershell.exe', ['-NoProfile', '-File', join(root, 'check.ps1')], { timeout: 20000 });
+            console.log((check.stdout || '').trim());
+            const pa = await browser.newPage(), pb = await browser.newPage();
+            await pa.goto(base + 'a'); await pb.goto(base + 'b');
+            const { tabs } = await call('tabs.list');
+            const a = tabs.find(t => t.url === base + 'a'), b = tabs.find(t => t.url === base + 'b');
+            assert.ok(a && b && a.id !== b.id, 'two fixture tab IDs missing');
+            await negative('ax.snapshot', { tabMatch: '/qa-bridge/' }, /ambig|multiple|matches/i);
+            await call('tabs.claim', { tabId: a.id, expectUrl: base + 'a', expectTitle: 'Bridge fixture' });
+            const args = { tabId: a.id };
+            const { nodes } = await call('ax.snapshot', args);
+            const button = nodes.find(n => n.role === 'button' && n.name === 'Count click');
+            const field = nodes.find(n => n.role === 'textbox' && n.name === 'Fixture value');
+            assert.ok(button && field, 'fixture accessible nodes missing');
+            await call('ax.click', { ...args, index: button.index });
+            await until(() => assert.deepEqual(counts.a, ['true']), 'trusted click in A');
+            assert.deepEqual(counts.b, [], 'wrong tab received input');
+            await call('ax.setValue', { ...args, index: field.index, value: '' });
+            assert.equal(await pa.$eval('#value', x => x.value), '');
+            assert.equal(await pb.$eval('#value', x => x.value), 'initial');
+            const shot = join(tmp, 'fixture.png');
+            await call('page.shot', { ...args, out: shot });
+            assert.ok((await stat(shot)).size > 100);
+            assert.equal((await readFile(shot)).subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+            await call('page.navigate', { ...args, url: base + 'next' });
+            await negative('ax.click', { ...args, index: button.index }, /snapshot|stale/i);
+            await call('tabs.release', args);
+            const released = await call('ping');
+            assert.ok(!released.attached.includes(a.id) && !released.claimed.includes(a.id));
+            console.log('PASS: real MV3 + Windows host, trusted click A=1 B=0, clearing A only, PNG, stale index, release');
+            await browser.close(); browser = undefined;
+            await until(async () => {
+              const alive = await send('ping').then(r => r.ok, () => false);
+              assert.equal(alive, false, 'pipe is still carrying pings');
+            }, 'old browser connection did not close');
+            await launch('second');
+            assert.deepEqual(counts, { a: ['true'], b: [] }, 'input was replayed');
+            console.log('PASS: new Chrome process and fresh profile reconnect without replay');
+          } finally {
+            try { await browser?.close(); } finally {
+              server.closeAllConnections();
+              await new Promise(yes => server.close(yes));
+              await rm(tmp, { recursive: true, force: true, maxRetries: 4, retryDelay: 300 });
+            }
+          }
+          '@ | Set-Content -Encoding utf8 smoke.mjs
+          node --check smoke.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'smoke script syntax check failed' }
+          node smoke.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Windows smoke failed' }
