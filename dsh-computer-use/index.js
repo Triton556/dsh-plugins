@@ -24,17 +24,24 @@ function mediaTypeOf(filePath) {
   return IMAGE_TYPES[String(extname(filePath)).toLowerCase()] || null;
 }
 
-function downscale(filePath, maxDimension) {
-  // A full-screen PNG can exceed the deployment's image limits, so shrink it
-  // with the ffmpeg that the recording path already depends on.
+function positiveLimit(value, fallback) {
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+function downscale(filePath, limits) {
+  // Fit both sides and the pixel budget. A bytes-only rejection may already be
+  // within both bounds; still reduce the raster rather than retrying it unchanged.
+  const pixels = positiveLimit(limits.maxImagePixels, 1600 ** 2);
+  const side = Math.min(positiveLimit(limits.maxImageDimension, 1600), 1600, pixels);
+  const ratio = `min(0.875,min(${side}/max(iw,ih),sqrt(${pixels}/(iw*ih))))`;
+  const target = join(tmpdir(), `dsh-cua-attachment-${randomUUID()}.png`);
   try {
-    // ESM entry: the imported binding, not require() (which does not exist here
-    // and made the oversized-image retry a silent no-op).
-    const target = filePath.replace(/\.(png|jpe?g|webp)$/i, '-small.$1');
-    execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-i', filePath,
-      '-vf', `scale='min(${maxDimension},iw)':-1`, target], { timeout: 20000, windowsHide: true });
+    execFileSync('ffmpeg', ['-n', '-loglevel', 'error', '-i', filePath,
+      '-vf', `scale='max(1,trunc(iw*${ratio}))':'max(1,trunc(ih*${ratio}))'`,
+      '-frames:v', '1', target], { timeout: 20000, windowsHide: true });
     return existsSync(target) ? target : null;
   } catch (error) {
+    try { unlinkSync(target); } catch {}
     return null;
   }
 }
@@ -55,10 +62,14 @@ async function attachImage(ctx, filePath) {
       const message = String(error && error.message || error);
       const tooBig = /TOO_LARGE|TOO_MANY_PIXELS|DIMENSION_TOO_LARGE|too large|exceeds/i.test(message);
       if (!tooBig || mediaType !== 'image/png') throw error;
-      const smaller = downscale(filePath, Math.min(Number(limits.maxImageDimension) || 1600, 1600));
+      const smaller = downscale(filePath, limits);
       if (!smaller) throw error;
-      const ref = await save(smaller);
-      return ref ? { ...ref } : null;
+      try {
+        const ref = await save(smaller);
+        return ref ? { ...ref } : null;
+      } finally {
+        try { unlinkSync(smaller); } catch {}
+      }
     }
   } catch (error) {
     console.warn('[dsh-computer-use] image attach failed:', String(error && error.message || error).slice(0, 200));
