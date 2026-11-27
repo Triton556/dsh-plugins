@@ -38,6 +38,14 @@ The extension now bounds the capture command (2 s inactive, 6 s active), rejects
 
 A quick refusal with a manual recovery is intentional when Chrome cannot render that tab. This is not a guarantee that all inactive tabs can be captured. Retest this contract through the installed DSH host and retail Chrome before production acceptance.
 
+### Packaged Desktop and DPI diagnostics
+
+[Signed installer test](https://github.com/Triton556/dsh-plugins/actions/runs/45948254963/job/140337840027): DeepSeek's Windows x64 download passed Authenticode verification; installed executable reported `0.2.2.0`. A clean Desktop profile initialized on first launch. The installed `dsh.cmd`, not the npm CLI, added all three exact QA tarballs. Their package names were present both in dependencies and the enabled bundle graph, and the signed application reopened. This establishes the packaged install and profile path, not tool dispatch.
+
+[Native DPI check](https://github.com/Triton556/dsh-plugins/actions/runs/45948672324/job/140339168722): Computer Use now reports the selected HWND's effective DPI and awareness rather than a registry estimate. The live one-screen WinForms fixture reported `96` and `unaware`, matching the independent Win32 read. The click, crop, frame and automated Escape checks passed again. Input geometry has not changed. For mixed-DPI acceptance use a per-monitor-aware test app, verify actual 96 and 144 readings on the two displays (including negative origin), and then check pointer, crop and frame placement as the same window moves across them.
+
+[Desktop UI follow-up](https://github.com/Triton556/dsh-plugins/actions/runs/45949656150/job/140342309534): the signed app reached its real workspace twice without credentials via **Add API Key → Set up later**, confirmed by the `New session` control. Invoking **Plugins** succeeded, but the test did not observe the expected **Installed** tab in the accessible UI. The run therefore remains red at UI discovery; it does not establish whether the packages were rendered in the list. No account was used and no model requests were made.
+
 ## Further UX work
 
 1. **Browser Bridge:** show connection health by layer, require snapshot generation with AX indices, and report whether expected postconditions were observed after input. An uncertain outcome must not cause the action to be replayed.
@@ -50,4 +58,4 @@ These proposals are not implemented as new features here. See the [portable veri
 
 - Use a disposable Windows 11 VM with an unlocked interactive desktop, not just a service or a build runner. Use a new Chrome profile with no accounts, load the unpacked extension and register the native host there. Repeat the two-tab fixture through DSH's installed Bridge and verify reconnects, the Chrome attachment notice, and no replay after lost acknowledgement.
 - Use two disposable Windows windows with different counter targets. Validate the blue border and pointer timing before, during and after real dispatch, foreground refusal and overlap, physical Escape in the middle of a drag (the automated key path passed separately), screenshot and OCR, and 100%/150% DPI on two displays including negative origin. Record using independent desktop capture, not just a window-only video.
-- Reproduce the live Artifact Panes workflow in the Windows desktop host, including screenshot attachment and the chat-switch capture guard; distinguish a saved draft from actual submission. Use a fake local model endpoint. Do not frame the Linux recording as Windows evidence.
+- Now that signed Desktop installation and workspace entry are verified, reproduce the live Artifact Panes workflow in the Windows desktop host, including screenshot attachment and the chat-switch capture guard; distinguish a saved draft from actual submission. Use a fake local model endpoint. Do not frame the Linux recording as Windows evidence.
