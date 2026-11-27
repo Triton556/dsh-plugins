@@ -43,7 +43,14 @@ jobs:
               Get-Content (Join-Path $lab 'sampler-error.txt')
               throw 'Sampler failed'
             }
-            if ($LASTEXITCODE -ne 0) { Get-Content (Join-Path $lab 'actions.json'); throw 'Tool flow failed' }
+            if ($LASTEXITCODE -ne 0) {
+              Get-Content (Join-Path $lab 'actions.json')
+              $nativeLog=Join-Path $sandboxTmp 'dsh-cua-overlay.log'
+              if(Test-Path $nativeLog){Get-Content $nativeLog}
+              $inputLog=Join-Path $lab 'input.csv'
+              if(Test-Path $inputLog){Get-Content $inputLog}
+              throw 'Tool flow failed'
+            }
           } finally {
             if(!$fixtureProcess.HasExited){Stop-Process -Id $fixtureProcess.Id}
             $overlayPidPath=Join-Path $sandboxTmp 'dsh-cua-overlay.pid'

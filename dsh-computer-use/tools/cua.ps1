@@ -685,7 +685,7 @@ switch ($Action) {
       }
     }
     if (-not $running) {
-      Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',("`"${Script}`"")) -WindowStyle Hidden | Out-Null
+      Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-STA','-ExecutionPolicy','Bypass','-File',("`"${Script}`"")) -WindowStyle Hidden | Out-Null
       Start-Sleep -Milliseconds 250
     }
     "overlay: " + $(if ($running) { 'already running' } else { 'started' })

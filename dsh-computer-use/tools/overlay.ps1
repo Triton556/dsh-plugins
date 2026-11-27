@@ -238,7 +238,14 @@ function ForegroundMatches($snapshot) {
 
 $timer = New-Object System.Windows.Threading.DispatcherTimer
 $timer.Interval = [TimeSpan]::FromMilliseconds(33)
+$script:daemonReady = $false
 $timer.Add_Tick({
+  if (!$script:daemonReady -and $window.IsVisible) {
+    try {
+      [IO.File]::WriteAllText((Join-Path $env:TEMP 'dsh-cua-overlay.ready'), [string]$PID)
+      $script:daemonReady = $true
+    } catch {}
+  }
   $snapshot = Read-Snapshot
   $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
   $ttl = 90000
