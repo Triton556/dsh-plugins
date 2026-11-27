@@ -7,6 +7,9 @@ using System.Runtime.InteropServices;
 public static class FrameQa {
   [StructLayout(LayoutKind.Sequential)] public struct Point { public int X, Y; }
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left, Top, Right, Bottom; }
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out Rect r);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref Point p);
   [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int key);
   [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
@@ -62,19 +65,27 @@ function Sample-Frame {
   $pressed=([FrameQa]::GetAsyncKeyState(1) -band 32768) -ne 0
   $active=[FrameQa]::GetForegroundWindow() -eq $a.Handle
   $p=New-Object FrameQa+Point;[void][FrameQa]::GetCursorPos([ref]$p)
-  $left=$script:origin.X-6;$top=$script:origin.Y-32
-  $bmp=New-Object Drawing.Bitmap(346,275)
+  $pos=New-Object FrameQa+Point
+  if(![FrameQa]::IsWindowVisible($a.Handle) -or ![FrameQa]::ClientToScreen($a.Handle,[ref]$pos)){return}
+  $left=$pos.X;$top=$pos.Y
+  $bmp=New-Object Drawing.Bitmap(330,235)
   $g=[Drawing.Graphics]::FromImage($bmp)
   try {
     $dest=$g.GetHdc();$src=[FrameQa]::GetDC([IntPtr]::Zero)
     try {
-      if ($src -eq [IntPtr]::Zero -or ![FrameQa]::BitBlt($dest,0,0,346,275,$src,$left,$top,0x40CC0020)) { throw 'BitBlt failed' }
+      if ($src -eq [IntPtr]::Zero -or ![FrameQa]::BitBlt($dest,0,0,330,235,$src,$left,$top,0x40CC0020)) { throw 'BitBlt failed' }
     } finally {
       $g.ReleaseHdc($dest); if($src -ne [IntPtr]::Zero){[void][FrameQa]::ReleaseDC([IntPtr]::Zero,$src)}
     }
+    # Only publish frames proven to contain our two known fixture colors.
+    # No runner margins or other app pixels in the recorded region.
+    $a1=$bmp.GetPixel(32,112); $a2=$bmp.GetPixel(300,185); $a3=$bmp.GetPixel(260,199)
+    if($a1.R -ne 208 -or $a1.G -ne 117 -or $a1.B -ne 0 -or
+       $a2.R -ne 208 -or $a2.G -ne 117 -or $a2.B -ne 0 -or
+       $a3.R -notin 237,251 -or $a3.G -notin 159,185 -or $a3.B -notin 22,28){return}
     $blue=0
-    for($j=7;$j -lt 18;$j++){
-      for($k=144;$k -lt 157;$k+=3) {$blue=[Math]::Max($blue,$bmp.GetPixel($j,$k).B)}
+    for($j=1;$j -lt 12;$j++){
+      for($k=112;$k -lt 127;$k+=3) {$blue=[Math]::Max($blue,$bmp.GetPixel($j,$k).B)}
     }
     $number=$script:i++
     $bmp.Save((Join-Path $script:frames ('{0:D5}.png' -f $number)),[Drawing.Imaging.ImageFormat]::Png)
@@ -99,6 +110,9 @@ $a.Add_Shown({
   $timer.Interval=23
   $timer.Add_Tick({try {Sample-Frame} catch {[IO.File]::WriteAllText((Join-Path $Lab 'sampler-error.txt'),($_|Out-String));$script:timer.Stop()}})
   $timer.Start()
-  [IO.File]::WriteAllText((Join-Path $Lab 'ready'),'ready')
+  $rect=New-Object FrameQa+Rect
+  if(![FrameQa]::GetWindowRect($a.Handle,[ref]$rect)){throw 'fixture bounds unavailable'}
+  $info=@{offsetX=($script:origin.X-$rect.Left);offsetY=($script:origin.Y-$rect.Top);title=$a.Text;hWnd=$a.Handle.ToInt64()} | ConvertTo-Json -Compress
+  [IO.File]::WriteAllText((Join-Path $Lab 'ready'),$info)
 })
 [Windows.Forms.Application]::Run($a)

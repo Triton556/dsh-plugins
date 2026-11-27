@@ -31,6 +31,11 @@ jobs:
           $env:WFR_LAB=$lab
           $fixture=Join-Path $env:GITHUB_WORKSPACE 'docs/qa/overlay-timing-fixture.ps1'
           $runner=Join-Path $env:GITHUB_WORKSPACE 'docs/qa/overlay-timing-runner.mjs'
+          $overlayScript=Join-Path $env:GITHUB_WORKSPACE 'dsh-computer-use/tools/overlay.ps1'
+          $overlayProcess=Start-Process powershell.exe -ArgumentList @('-NoProfile','-STA','-WindowStyle','Hidden','-File',('"' + $overlayScript + '"')) -PassThru
+          $wait=(Get-Date).AddSeconds(12)
+          while (!(Test-Path (Join-Path $sandboxTmp 'dsh-cua-overlay.build')) -and !$overlayProcess.HasExited -and (Get-Date) -lt $wait) { Start-Sleep -Milliseconds 100 }
+          if (!(Test-Path (Join-Path $sandboxTmp 'dsh-cua-overlay.build'))) { throw 'Overlay did not start' }
           $fixtureProcess=Start-Process powershell.exe -ArgumentList @('-NoProfile','-STA','-WindowStyle','Hidden','-File',('"' + $fixture + '"'),('"' + $lab + '"')) -PassThru
           try {
             $until=(Get-Date).AddSeconds(15)
@@ -53,7 +58,7 @@ jobs:
             }
           }
       - name: Upload bounded synthetic fixture evidence
-        if: always()
+        if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: windows-cua-frame-timing
