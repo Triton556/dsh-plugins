@@ -212,33 +212,52 @@ jobs:
               $tab = Find-VisibleDesktopControl '^Installed(?: \(\d+\))?$'
               $direct = Get-AppUi | Where-Object { $_.Current.Name -match '^(?:Add plugin|Installed plugins)$' } | Select-Object -First 1
               if ($tab -and !$direct) { Invoke-DesktopControl $tab }
+              $section = Wait-For {
+                Get-AppUi | Where-Object { $_.Current.Name -eq 'Installed plugins' } | Select-Object -First 1
+              } 'No installed-plugins heading on page' 12
+              $layout = @(Get-AppUi | Where-Object { $_.Current.Name -match '(?i)Installed plugins|dsh-artifact-panes|dsh-browser-bridge|dsh-computer-use|Artifact Panes|Browser Bridge|Computer Use' -and $_.Current.Name.Length -le 150 } |
+                ForEach-Object { "$($_.Current.ControlType.ProgrammaticName) offscreen=$($_.Current.IsOffscreen) top=$($_.Current.BoundingRectangle.Top) $($_.Current.Name)" } | Select-Object -First 35)
+              Write-Host "Installed layout before scrolling: $($layout -join ' | ')"
               foreach ($p in $cardTests.GetEnumerator()) {
-                $item = Wait-For {
-                  Get-AppUi | Where-Object { $_.Current.Name -match $p.Value -and $_.Current.Name.Length -le 170 } | Select-Object -First 1
-                } "Installed card not found in the Desktop UI: $($p.Key)" 20
-                if ($item.Current.IsOffscreen) {
-                  $scrollItem = $null
-                  if ($item.TryGetCurrentPattern([Windows.Automation.ScrollItemPattern]::Pattern,[ref]$scrollItem)) {
-                    ([Windows.Automation.ScrollItemPattern]$scrollItem).ScrollIntoView()
-                  } else {
-                    $node = $item
-                    $walker = [Windows.Automation.TreeWalker]::ControlViewWalker
-                    for ($i=0; $i -lt 20 -and $node; $i++) {
-                      $scroller = $null
-                      if ($node.TryGetCurrentPattern([Windows.Automation.ScrollPattern]::Pattern,[ref]$scroller) -and $scroller.Current.VerticallyScrollable) {
-                        for ($j=0; $j -lt 10 -and $item.Current.IsOffscreen; $j++) {
-                          if ($scroller.Current.VerticalScrollPercent -ge 99.9) { break }
-                          $scroller.Scroll([Windows.Automation.ScrollAmount]::NoAmount,[Windows.Automation.ScrollAmount]::SmallIncrement)
-                          Start-Sleep -Milliseconds 100
-                        }
-                        break
-                      }
-                      $node = $walker.GetParent($node)
+                # Official experimental Artifact Panes may have the same title.
+                # Always re-query below the actual Installed plugins heading.
+                $found = $null
+                for ($attempt=0; $attempt -lt 10 -and !$found; $attempt++) {
+                  $all = @(Get-AppUi)
+                  $header = $all | Where-Object { $_.Current.Name -eq 'Installed plugins' } | Select-Object -First 1
+                  $headingY = $header.Current.BoundingRectangle.Top
+                  $candidates = @($all | Where-Object {
+                    $r = $_.Current.BoundingRectangle
+                    $_.Current.Name -match $p.Value -and $_.Current.Name.Length -le 150 -and
+                      $r.Width -gt 0 -and $r.Height -gt 0 -and $r.Top -gt $headingY
+                  })
+                  $found = $candidates | Where-Object { !$_.Current.IsOffscreen } | Select-Object -First 1
+                  if ($found) { break }
+                  $walk = if ($candidates.Count) { $candidates[0] } else { $header }
+                  $scrolled = $false
+                  $walker = [Windows.Automation.TreeWalker]::ControlViewWalker
+                  for ($i=0; $i -lt 20 -and $walk; $i++) {
+                    $sp = $null
+                    if ($walk.TryGetCurrentPattern([Windows.Automation.ScrollPattern]::Pattern,[ref]$sp) -and
+                        $sp.Current.VerticallyScrollable -and $sp.Current.VerticalScrollPercent -lt 99.9) {
+                      $sp.Scroll([Windows.Automation.ScrollAmount]::NoAmount,[Windows.Automation.ScrollAmount]::SmallIncrement)
+                      $scrolled = $true
+                      break
+                    }
+                    $walk = $walker.GetParent($walk)
+                  }
+                  if (!$scrolled -and $candidates.Count) {
+                    $si = $null
+                    if ($candidates[0].TryGetCurrentPattern([Windows.Automation.ScrollItemPattern]::Pattern,[ref]$si)) {
+                      ([Windows.Automation.ScrollItemPattern]$si).ScrollIntoView()
+                      $scrolled = $true
                     }
                   }
+                  if (!$scrolled) { break }
+                  Start-Sleep -Milliseconds 250
                 }
-                if ($item.Current.IsOffscreen) { throw "Installed card exists but did not become visible: $($p.Key)" }
-                Write-Host "PASS: installed QA bundle visible on the real Plugins page: $($p.Key) [$($item.Current.Name)]"
+                if (!$found) { throw "Could not assert a visible card below Installed plugins: $($p.Key)" }
+                Write-Host "PASS: installed QA bundle visible on the real Plugins page: $($p.Key) [$($found.Current.Name)]"
               }
               Capture-TestDesktop 'plugins'
             } catch {
