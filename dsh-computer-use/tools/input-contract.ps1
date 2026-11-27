@@ -25,7 +25,7 @@ public static System.IntPtr GetForegroundWindow() { return Foreground; }
 public static System.IntPtr WindowFromPoint(POINT p) { return Hit; }
 public static System.IntPtr GetAncestor(System.IntPtr h, uint flag) { return Root; }
 '@
-foreach ($name in @('Assert-Foreground','Assert-PointerTarget','Assert-ActionActive','Wait-ActionDelay','Invoke-MousePress','Get-TargetDpi')) {
+foreach ($name in @('Assert-Foreground','Assert-PointerTarget','Assert-ActionActive','Wait-ActionDelay','Invoke-MousePress','Get-TargetDpi','Wait-PointerIndicator')) {
   $fn = $ast.Find({ param($node)
     $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
   }, $true)
@@ -97,3 +97,31 @@ if ($null -ne $missing.Dpi -or $missing.Awareness -ne 'unknown') { throw 'No-DPI
 $legacy = Get-TargetDpi $target
 if ($null -ne $legacy.Dpi -or $legacy.Awareness -ne 'unknown') { throw 'Unavailable APIs invented a DPI or awareness' }
 Write-Output 'PASS: window DPI from exact HWND, awareness and unknown/missing APIs without registry fallback'
+
+
+# The paint gate is per action and target and doesn't delay indicator-off
+# calls; test it without starting WPF or sending real input in this process.
+$oldTemp = $env:TEMP
+$env:TEMP = ([IO.Path]::GetTempPath())
+$Overlay = $false
+$StopToken = [guid]::NewGuid().ToString()
+$receipt = Join-Path $env:TEMP "dsh-cua-painted-$StopToken.signal"
+[Cua.Native]::Foreground = $target
+try {
+  Wait-PointerIndicator $target
+  $Overlay = $true
+  [IO.File]::WriteAllText($receipt, [string]$target.ToInt64())
+  Wait-PointerIndicator $target
+  [IO.File]::WriteAllText($receipt, [string]$other.ToInt64())
+  Require-Rejection { Wait-PointerIndicator $target } 'OVERLAY_NOT_READY:'
+  [IO.File]::Delete($receipt)
+  $DeadlineMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - 1
+  Require-Rejection { Wait-PointerIndicator $target } 'TIMED_OUT:'
+  $DeadlineMs = 0
+  [Cua.Native]::Foreground = $other
+  Require-Rejection { Wait-PointerIndicator $target } 'TARGET_NOT_FOREGROUND:'
+  Write-Output 'PASS: exact paint receipt, wrong target rejected, overlay-off/deadline/foreground behavior retained'
+} finally {
+  [IO.File]::Delete($receipt)
+  $env:TEMP = $oldTemp
+}

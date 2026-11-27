@@ -36,6 +36,7 @@ if (-not ('CuaWpf.Native' -as [type])) {
 [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int vKey);
 [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
 [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(System.IntPtr hWnd, int attr, out RECT rect, int size);
+[DllImport("dwmapi.dll")] public static extern int DwmFlush();
 '@
 }
 
@@ -206,6 +207,8 @@ $script:lastSeen = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 $script:rock = 0.0
 $script:lastEsc = 0
 $script:stoppedToken = ''
+$script:paintingToken = ''
+$script:paintedToken = ''
 $StopPath = Join-Path $env:TEMP 'dsh-cua-stop.json'
 
 function Read-Snapshot {
@@ -301,6 +304,29 @@ $timer.Add_Tick({
     $bannerW = $banner.DesiredSize.Width
     [System.Windows.Controls.Canvas]::SetLeft($banner, ($tl.X + [Math]::Max(0, ($br.X - $tl.X - $bannerW) / 2)))
     [System.Windows.Controls.Canvas]::SetTop($banner, ($tl.Y + 24))
+  }
+
+  # Write only for a matching action with a valid visible frame. On the
+  # first tick WPF schedules the edges/banner; a later tick plus DwmFlush
+  # is the compositor barrier before unblocking the pointer worker.
+  $paintCandidate = $frame -and $visible -and
+    (!$screenMode -or $banner.Visibility -eq 'Visible') -and
+    ($token -match '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$')
+  if (!$paintCandidate) {
+    $script:paintingToken = ''
+  } elseif ($token -ne $script:paintedToken) {
+    if ($token -ne $script:paintingToken) {
+      $script:paintingToken = $token
+    } else {
+      try {
+        if ([CuaWpf.Native]::DwmFlush() -eq 0 -and (ForegroundMatches $snapshot)) {
+          $paintPath = Join-Path $env:TEMP "dsh-cua-painted-$token.signal"
+          $receiptHwnd = if ($screenMode) { '0' } else { [string]$snapshot.target.hwnd }
+          [IO.File]::WriteAllText($paintPath, $receiptHwnd)
+          $script:paintedToken = $token
+        }
+      } catch {}
+    }
   }
 
   if (-not $hasCursor) { $script:curX = -1.0; $script:curY = -1.0 }

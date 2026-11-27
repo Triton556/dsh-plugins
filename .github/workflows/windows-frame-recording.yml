@@ -19,6 +19,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'git fetch failed' }
           git checkout --detach FETCH_HEAD
           if ($LASTEXITCODE -ne 0 -or (git rev-parse HEAD) -ne $env:GITHUB_SHA) { throw 'wrong checkout' }
+          pwsh -NoProfile -File dsh-computer-use/tools/input-contract.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Pointer indicator contracts failed' }
       - name: Record production wrapper, native engine and WPF timing
         shell: powershell
         run: |

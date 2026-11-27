@@ -629,7 +629,9 @@ export function apply(ctx, config = {}) {
                     // Clear the warning even when the engine fails or was stopped.
                     pushOverlay(0, '', '', '', 'window', 0);
                   }
-                  try { unlinkSync(join(process.env.TEMP || tmpdir(), `dsh-cua-stop-${stopToken}.signal`)); } catch {}
+                  for (const signal of ['stop', 'painted']) {
+                    try { unlinkSync(join(process.env.TEMP || tmpdir(), `dsh-cua-${signal}-${stopToken}.signal`)); } catch {}
+                  }
                   activeInputToken = undefined;
                 }
               }
