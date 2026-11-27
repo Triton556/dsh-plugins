@@ -19,6 +19,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'git fetch failed' }
           git checkout --detach FETCH_HEAD
           if ($LASTEXITCODE -ne 0 -or (git rev-parse HEAD) -ne $env:GITHUB_SHA) { throw 'wrong checkout' }
+          node --test dsh-browser-bridge/test/extension.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Bridge regression tests failed' }
       - name: Build and register on the disposable runner
         shell: pwsh
         working-directory: dsh-browser-bridge
@@ -44,7 +46,7 @@ jobs:
           Set-Location $lab
           $env:PUPPETEER_CACHE_DIR = Join-Path $lab 'chrome-cache'
           node --version
-          npm install --no-audit --no-fund --ignore-scripts --save-exact puppeteer@25.1.0
+          npm install --no-audit --no-fund --ignore-scripts --save-exact puppeteer@25.1.0 pngjs@7.0.0
           if ($LASTEXITCODE -ne 0) { throw 'Puppeteer setup failed' }
           npx --no-install puppeteer browsers install chrome@149.0.7827.22
           if ($LASTEXITCODE -ne 0) { throw 'Chrome for Testing download failed' }
@@ -58,6 +60,7 @@ jobs:
           import { setTimeout as delay } from 'node:timers/promises';
           import { promisify } from 'node:util';
           import puppeteer from 'puppeteer';
+          import { PNG } from 'pngjs';
           
           const root = resolve(process.env.GITHUB_WORKSPACE, 'dsh-browser-bridge');
           const run = promisify(execFile);
@@ -76,7 +79,9 @@ jobs:
             }
             const variant = path === '/qa-bridge/a' ? 'a' : path === '/qa-bridge/b' ? 'b' : 'next';
             res.setHeader('Content-Type', 'text/html; charset=UTF-8');
-            res.end('<!doctype html><title>Bridge fixture</title><label for="value">Fixture value</label>' +
+            const color = { a: 'rgb(218,42,35)', b: 'rgb(38,178,67)', next: 'rgb(163,88,191)' }[variant];
+            res.end('<!doctype html><title>Bridge fixture</title><style>html{background:' + color +
+              '}</style><label for="value">Fixture value</label>' +
               '<input id="value" value="initial"><button>Count click</button>' +
               '<script>document.querySelector("button").onclick = e => fetch("/event/' + variant +
               '?trusted=" + e.isTrusted);</script>');
@@ -166,17 +171,50 @@ jobs:
             assert.equal(await pa.$eval('#value', x => x.value), '');
             assert.equal(await pb.$eval('#value', x => x.value), 'initial');
             console.log('PASS: trusted click A=1 B=0, clearing A only');
-          const shots = [];
-          for (const [label, page] of [['foreground', pa], ['background', pb]]) {
-            await page.bringToFront();
-            const shot = join(tmp, label + '.png');
-            try {
-              await call('page.shot', { ...args, out: shot });
-              assert.ok((await stat(shot)).size > 100);
-              assert.equal((await readFile(shot)).subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
-              console.log('PASS: Bridge PNG with A in ' + label);
-            } catch (e) { shots.push(label + ': ' + e.message); console.log('FAIL: ' + shots.at(-1)); }
-          }
+            const getTabs = async () => (await call('tabs.list')).tabs;
+            async function checkShot(id, label, rgb, activeBefore, allowUnrendered) {
+              const shot = join(tmp, label + '.png');
+              const before = (await getTabs()).find(t => t.id === id);
+              assert.equal(before.active, activeBefore);
+              const start = Date.now();
+              const reply = await send('page.shot', { tabId: id, out: shot });
+              const ms = Date.now() - start;
+              const after = (await getTabs()).find(t => t.id === id);
+              assert.equal(after.active, activeBefore, label + ': command changed the active tab');
+              if (!reply.ok) {
+                assert.ok(allowUnrendered, label + ': ' + reply.error);
+                assert.match(reply.error, /did not produce a screenshot in 2 seconds.*select the intended tab/i);
+                assert.ok(ms < 6500, label + ': inactive refusal too slow: ' + ms + ' ms');
+                await assert.rejects(stat(shot), { code: 'ENOENT' });
+                console.log('PASS: ' + label + ' reported unavailable without switching or writing in ' + ms + ' ms');
+                return;
+              }
+              assert.equal(reply.data.tabId, id);
+              const decoded = PNG.sync.read(await readFile(shot));
+              const offset = ((decoded.height - 12) * decoded.width + (decoded.width - 12)) * 4;
+              const pixel = [...decoded.data.subarray(offset, offset + 3)];
+              assert.equal(pixel.length, 3);
+              assert.ok(rgb.every((ch, i) => Math.abs(ch - pixel[i]) <= 3), label + ': stale or wrong tab pixel ' + pixel + ' (wanted ' + rgb + ')');
+              console.log('PASS: ' + label + ' correct PNG pixel ' + pixel + ' in ' + ms + ' ms; focus unchanged');
+            }
+            // Paint the first version of A and then replace it while visible.
+            await pa.bringToFront();
+            await checkShot(a.id, 'foreground-original', [218,42,35], true, false);
+            await pa.evaluate(() => {
+              document.documentElement.style.background = 'rgb(40,83,217)';
+              return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            });
+            await checkShot(a.id, 'foreground-current', [40,83,217], true, false);
+            await pb.bringToFront();
+            await checkShot(a.id, 'previously-visible-inactive', [40,83,217], false, true);
+            const cold = await call('tabs.new', { url: base + 'cold', active: false });
+            await until(async () => {
+              const tab = (await getTabs()).find(t => t.id === cold.tabId);
+              assert.equal(tab?.status, 'complete');
+              assert.equal(tab?.active, false);
+            }, 'cold tab failed to load in background');
+            await checkShot(cold.tabId, 'never-selected-inactive', [163,88,191], false, true);
+            assert.equal((await getTabs()).find(t => t.id === b.id)?.active, true);
           await call('page.navigate', { ...args, url: base + 'next' });
             await negative('ax.click', { ...args, index: button.index }, /snapshot|stale/i);
             await call('tabs.release', args);
@@ -191,8 +229,6 @@ jobs:
             await launch('second');
             assert.deepEqual(counts, { a: ['true'], b: [] }, 'input was replayed');
             console.log('PASS: new Chrome process and fresh profile reconnect without replay');
-          assert.deepEqual(shots.filter(item => !item.startsWith('background:')), [], 'Required foreground PNG failed');
-          if (shots.length) console.warn('Known open Windows gate: ' + shots.join('; '));
           } finally {
             try { await browser?.close(); } finally {
               server.closeAllConnections();
