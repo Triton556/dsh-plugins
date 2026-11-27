@@ -73,6 +73,55 @@ if ($LaunchArgsFile -and (Test-Path -LiteralPath $LaunchArgsFile)) {
   $LaunchArgs = [System.IO.File]::ReadAllText($LaunchArgsFile, [System.Text.Encoding]::UTF8)
   Remove-Item -LiteralPath $LaunchArgsFile -Force -ErrorAction SilentlyContinue
 }
+$stopSignal = if ($StopToken) { Join-Path $env:TEMP "dsh-cua-stop-$StopToken.signal" }
+
+function Assert-ActionActive {
+  if ($stopSignal -and [IO.File]::Exists($stopSignal)) { throw 'STOPPED: user requested cancellation.' }
+  if ($DeadlineMs -gt 0 -and [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() -ge $DeadlineMs) {
+    throw 'TIMED_OUT: input cancelled at the next safe point.'
+  }
+}
+
+# Starting the indicator does not need the input worker's Win32 types.
+if ($Action -eq 'overlay') {
+  Assert-ActionActive
+  # Start the indicator daemon from PowerShell: a detached Node spawn produces a
+  # process that dies before it can create its window, while Start-Process works.
+  if (-not $Script -or -not (Test-Path -LiteralPath $Script)) { throw '-Script is required' }
+  $pidFile = Join-Path $env:TEMP 'dsh-cua-overlay.pid'
+  $running = $false
+  if (Test-Path -LiteralPath $pidFile) {
+    $existing = 0
+    [void][int]::TryParse((Get-Content -LiteralPath $pidFile -Raw).Trim(), [ref]$existing)
+    if ($existing -gt 0) {
+      $previous = Get-Process -Id $existing -ErrorAction SilentlyContinue
+      if ($previous -and $previous.ProcessName -eq 'powershell') {
+        try {
+          $cmd = (Get-CimInstance Win32_Process -Filter "ProcessId=$existing" -ErrorAction Stop).CommandLine
+          $escaped = [Regex]::Escape([IO.Path]::GetFullPath($Script))
+          if ($cmd -match ('-File\s+(?:"' + $escaped + '"|' + $escaped + ')(?:\s|$)')) {
+            $running = $true
+            $stampFile = Join-Path $env:TEMP 'dsh-cua-overlay.build'
+            $stamped = 0L
+            if ((Test-Path -LiteralPath $stampFile) -and
+                [long]::TryParse((Get-Content -Raw -LiteralPath $stampFile).Trim(), [ref]$stamped) -and
+                $stamped -ne [IO.File]::GetLastWriteTimeUtc($Script).Ticks) {
+              $previous.Kill()
+              $running = -not $previous.WaitForExit(1000)
+            }
+          }
+        } catch { $running = $true }
+      }
+    }
+  }
+  if (-not $running) {
+    Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-STA','-ExecutionPolicy','Bypass','-File',("`"${Script}`"")) -WindowStyle Hidden | Out-Null
+    Start-Sleep -Milliseconds 250
+  }
+  "overlay: " + $(if ($running) { 'already running' } else { 'started' })
+  return
+}
+
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 
 if (-not ('Cua.Native' -as [type])) {
@@ -214,15 +263,6 @@ function Convert-Point([System.IntPtr]$h, [int]$px, [int]$py) {
     $p.X = $r.Left + $px; $p.Y = $r.Top + $py
   }
   return @{ X = $p.X; Y = $p.Y }
-}
-
-$stopSignal = if ($StopToken) { Join-Path $env:TEMP "dsh-cua-stop-$StopToken.signal" }
-
-function Assert-ActionActive {
-  if ($stopSignal -and [IO.File]::Exists($stopSignal)) { throw 'STOPPED: user requested cancellation.' }
-  if ($DeadlineMs -gt 0 -and [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() -ge $DeadlineMs) {
-    throw 'TIMED_OUT: input cancelled at the next safe point.'
-  }
 }
 
 function Wait-ActionDelay([int]$milliseconds) {
@@ -653,42 +693,6 @@ switch ($Action) {
     Get-Process | Where-Object { $_.MainWindowHandle -ne 0 } |
       Select-Object @{n='pid';e={$_.Id}}, @{n='proc';e={$_.ProcessName}}, @{n='title';e={$_.MainWindowTitle}}, @{n='hwnd';e={$_.MainWindowHandle}} |
       Sort-Object proc | Format-Table -AutoSize | Out-String -Width 200
-  }
-  'overlay' {
-    # Start the indicator daemon from PowerShell: a detached Node spawn produces a
-    # process that dies before it can create its window, while Start-Process works.
-    if (-not $Script -or -not (Test-Path -LiteralPath $Script)) { throw '-Script is required' }
-    $pidFile = Join-Path $env:TEMP 'dsh-cua-overlay.pid'
-    $running = $false
-    if (Test-Path -LiteralPath $pidFile) {
-      $existing = 0
-      [void][int]::TryParse((Get-Content -LiteralPath $pidFile -Raw).Trim(), [ref]$existing)
-      if ($existing -gt 0) {
-        $previous = Get-Process -Id $existing -ErrorAction SilentlyContinue
-        if ($previous -and $previous.ProcessName -eq 'powershell') {
-          try {
-            $cmd = (Get-CimInstance Win32_Process -Filter "ProcessId=$existing" -ErrorAction Stop).CommandLine
-            $escaped = [Regex]::Escape([IO.Path]::GetFullPath($Script))
-            if ($cmd -match ('-File\s+(?:"' + $escaped + '"|' + $escaped + ')(?:\s|$)')) {
-              $running = $true
-              $stampFile = Join-Path $env:TEMP 'dsh-cua-overlay.build'
-              $stamped = 0L
-              if ((Test-Path -LiteralPath $stampFile) -and
-                  [long]::TryParse((Get-Content -Raw -LiteralPath $stampFile).Trim(), [ref]$stamped) -and
-                  $stamped -ne [IO.File]::GetLastWriteTimeUtc($Script).Ticks) {
-                $previous.Kill()
-                $running = -not $previous.WaitForExit(1000)
-              }
-            }
-          } catch { $running = $true }
-        }
-      }
-    }
-    if (-not $running) {
-      Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-STA','-ExecutionPolicy','Bypass','-File',("`"${Script}`"")) -WindowStyle Hidden | Out-Null
-      Start-Sleep -Milliseconds 250
-    }
-    "overlay: " + $(if ($running) { 'already running' } else { 'started' })
   }
   'info' {
     if ($h -eq [System.IntPtr]::Zero) { throw '-Window or -ProcessId is required' }

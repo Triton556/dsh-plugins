@@ -2,7 +2,7 @@ name: Windows Computer Use frame recording
 on:
   push:
     branches: ['qa/windows-frame-recording-2026-11-27', 'qa/plugin-reliability-2026-11-26']
-    paths: ['.github/workflows/windows-frame-recording.yml']
+    paths: ['.github/workflows/windows-frame-recording.yml', 'dsh-computer-use/tools/cua.ps1']
 permissions: {}
 jobs:
   frame-recording:
