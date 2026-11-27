@@ -82,3 +82,58 @@ test('wait obeys the same internal-page restriction as other readers', async () 
   await assert.rejects(vm.runInContext('run("page.wait", {tabId: 18, selector: "body"})', context), /internal pages are not drivable/i);
   assert.equal(calls, 0);
 });
+
+test('screenshots never activate a loading tab or touch its debugger', async () => {
+  let reads = 0;
+  chrome.tabs.get = async () => ({ active: false, status: ++reads === 1 ? 'loading' : 'complete', url: 'https://fixture.invalid/a' });
+  let attempts = 0;
+  chrome.tabs.update = chrome.debugger.attach = async () => { attempts++; };
+  await assert.rejects(vm.runInContext('run("page.shot", {tabId: 23})', context), /still loading/i);
+  assert.equal(attempts, 0);
+});
+
+test('a stalled inactive screenshot has a bounded actionable error and no activation', async () => {
+  chrome.tabs.get = async () => ({ active: false, status: 'complete', url: 'https://fixture.invalid/a' });
+  let attempts = 0;
+  chrome.tabs.update = async () => { attempts++; };
+  chrome.debugger.attach = async () => {};
+  chrome.debugger.sendCommand = async (target, method) => {
+    assert.equal(target.tabId, 24);
+    if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'a', loaderId: 'l', url: 'https://fixture.invalid/a' } } };
+    assert.equal(method, 'Page.captureScreenshot');
+    return new Promise(() => {});
+  };
+  const timers = [];
+  const previous = context.setTimeout;
+  context.setTimeout = (callback, ms) => {
+    timers.push(ms);
+    if (ms === 2000 || ms === 25000) queueMicrotask(callback);
+    return 1;
+  };
+  try {
+    await assert.rejects(vm.runInContext('run("page.shot", {tabId: 24})', context), /select the intended tab in Chrome and retry/i);
+    assert.ok(timers.includes(2000));
+    assert.equal(attempts, 0);
+  } finally { context.setTimeout = previous; }
+});
+
+test('screenshot rejects a same-URL reload and preserves the exact tab on focus changes', async () => {
+  const fixtureUrl = 'https://fixture.invalid/a';
+  let loader = 'before', active = true, navigate = true;
+  chrome.tabs.get = async () => ({ active, status: 'complete', url: fixtureUrl });
+  chrome.debugger.attach = async () => {};
+  chrome.debugger.sendCommand = async (target, method) => {
+    assert.equal(target.tabId, 25);
+    if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'a', loaderId: loader, url: fixtureUrl } } };
+    assert.equal(method, 'Page.captureScreenshot');
+    active = false;
+    if (navigate) loader = 'after';
+    return { data: 'pixels-of-a' };
+  };
+  await assert.rejects(vm.runInContext('run("page.shot", {tabId: 25})', context), /page changed/i);
+  active = true;
+  navigate = false;
+  const shot = await vm.runInContext('run("page.shot", {tabId: 25})', context);
+  assert.equal(shot.tabId, 25);
+  assert.equal(shot.data, 'pixels-of-a');
+});
