@@ -177,13 +177,84 @@ jobs:
             Write-Host "PASS: reached the signed Desktop workspace without credentials: $($workspace.Current.Name)"
             $plugins = Wait-For { Find-VisibleDesktopControl '^Plugins$' } 'Workspace did not expose the Plugins button' 15
             Invoke-DesktopControl $plugins
-            $installed = Wait-For {
-              Find-VisibleDesktopControl '^Installed(?: \(\d+\))?$'
-            } 'Plugins did not expose the Installed tab' 15
-            Invoke-DesktopControl $installed
-            foreach ($pattern in @('(?:dsh-artifact-panes|Artifact Panes)', '(?:dsh-browser-bridge|Browser Bridge)', '(?:dsh-computer-use|Computer Use)')) {
-              $listed = Wait-For { Find-VisibleDesktopControl $pattern } "Installed UI did not expose $pattern" 20
-              Write-Host "PASS: installed QA bundle visible in the real application: $($listed.Current.Name)"
+            function Get-AppUi {
+              foreach ($proc in @(Get-DesktopProcesses | Where-Object { $_.MainWindowHandle -ne 0 })) {
+                try {
+                  $root = [Windows.Automation.AutomationElement]::FromHandle($proc.MainWindowHandle)
+                  foreach ($el in $root.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)) {
+                    $el
+                  }
+                } catch [Windows.Automation.ElementNotAvailableException] {}
+              }
             }
-            Write-Host 'Scope: signed Desktop workspace entry and packaged profile only; no model call, Artifact Panes capture or installed DSH tool dispatch was asserted.'
+            function Capture-TestDesktop([string]$kind) {
+              $live = Get-DesktopProcesses | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+              if (!$live) { return }
+              $dir = Join-Path $env:RUNNER_TEMP 'dsh-desktop-proof'
+              New-Item -ItemType Directory -Path $dir -Force | Out-Null
+              $file = Join-Path $dir ("$kind.png")
+              $engine = Join-Path $env:GITHUB_WORKSPACE 'dsh-computer-use\tools\cua.ps1'
+              try {
+                & powershell.exe -NoProfile -File $engine -Action shot -ProcessId $live.Id -Method print -Path $file
+                if ($LASTEXITCODE -ne 0) { Write-Warning 'Window snapshot unavailable on this runner' }
+              } catch { Write-Warning 'Window snapshot unavailable on this runner' }
+            }
+            $cardTests = [ordered]@{
+              'dsh-artifact-panes' = '(?:^|\b)(?:dsh-artifact-panes|Artifact Panes)(?:\b|$)'
+              'dsh-browser-bridge' = '(?:^|\b)(?:dsh-browser-bridge|Browser Bridge)(?:\b|$)'
+              'dsh-computer-use' = '(?:^|\b)(?:dsh-computer-use|Computer Use)(?:\b|$)'
+            }
+            try {
+              $marker = Wait-For {
+                Get-AppUi | Where-Object { $_.Current.Name -match '^(?:Add plugin|Installed plugins|Experimental plugins|Installed(?: \(\d+\))?)$' } | Select-Object -First 1
+              } 'Plugins page did not expose a normal list or tab marker' 25
+              Write-Host "Plugins page marker: $($marker.Current.Name)"
+              $tab = Find-VisibleDesktopControl '^Installed(?: \(\d+\))?$'
+              $direct = Get-AppUi | Where-Object { $_.Current.Name -match '^(?:Add plugin|Installed plugins)$' } | Select-Object -First 1
+              if ($tab -and !$direct) { Invoke-DesktopControl $tab }
+              foreach ($p in $cardTests.GetEnumerator()) {
+                $item = Wait-For {
+                  Get-AppUi | Where-Object { $_.Current.Name -match $p.Value -and $_.Current.Name.Length -le 170 } | Select-Object -First 1
+                } "Installed card not found in the Desktop UI: $($p.Key)" 20
+                if ($item.Current.IsOffscreen) {
+                  $scrollItem = $null
+                  if ($item.TryGetCurrentPattern([Windows.Automation.ScrollItemPattern]::Pattern,[ref]$scrollItem)) {
+                    ([Windows.Automation.ScrollItemPattern]$scrollItem).ScrollIntoView()
+                  } else {
+                    $node = $item
+                    $walker = [Windows.Automation.TreeWalker]::ControlViewWalker
+                    for ($i=0; $i -lt 20 -and $node; $i++) {
+                      $scroller = $null
+                      if ($node.TryGetCurrentPattern([Windows.Automation.ScrollPattern]::Pattern,[ref]$scroller) -and $scroller.Current.VerticallyScrollable) {
+                        for ($j=0; $j -lt 10 -and $item.Current.IsOffscreen; $j++) {
+                          if ($scroller.Current.VerticalScrollPercent -ge 99.9) { break }
+                          $scroller.Scroll([Windows.Automation.ScrollAmount]::NoAmount,[Windows.Automation.ScrollAmount]::SmallIncrement)
+                          Start-Sleep -Milliseconds 100
+                        }
+                        break
+                      }
+                      $node = $walker.GetParent($node)
+                    }
+                  }
+                }
+                if ($item.Current.IsOffscreen) { throw "Installed card exists but did not become visible: $($p.Key)" }
+                Write-Host "PASS: installed QA bundle visible on the real Plugins page: $($p.Key) [$($item.Current.Name)]"
+              }
+              Capture-TestDesktop 'plugins'
+            } catch {
+              $outline = @(Get-AppUi | Where-Object { !$_.Current.IsOffscreen -and $_.Current.Name -and $_.Current.Name.Length -le 110 -and $_.Current.Name -match '(?i)plugin|installed|settings|artifact|browser bridge|computer use|session' } |
+                ForEach-Object { "$($_.Current.ControlType.ProgrammaticName) $($_.Current.Name)" } | Sort-Object -Unique | Select-Object -First 35)
+              Write-Host "Visible Plugins-page candidates: $($outline -join ' | ')"
+              Capture-TestDesktop 'plugins-discovery'
+              throw
+            }
+            Write-Host 'Scope: signed Desktop workspace and visible plugin cards; no model call, Artifact Panes capture or installed DSH tool dispatch was asserted.'
           } finally { Stop-TestDesktop }
+      - name: Upload isolated app screenshot
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: dsh-desktop-plugins-proof
+          path: ${{ runner.temp }}/dsh-desktop-proof/*.png
+          retention-days: 14
+          if-no-files-found: ignore
