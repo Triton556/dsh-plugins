@@ -82,19 +82,25 @@ Design notes worth knowing:
 
 ## Install
 
-Both plugins are ordinary DSH profile bundles. In the profile that should use them:
+All three plugins are DSH profile bundles. From a checkout, package the desired
+bundle and install its tarball into the profile you use. For example, to install
+Computer Use into the Web profile, run from the repository root:
 
 ```sh
-pnpm add dsh-computer-use dsh-artifact-panes
+npm pack ./dsh-computer-use
+dsh plugin --profile web add ./dsh-computer-use-0.1.0.tgz
 ```
 
-and add the bundle ids to `dsh.profile.bundles` in the profile's `package.json`.
-The computer-use plugin pulls its PowerShell engine and CDP helper from inside its
-own package, so nothing else has to be installed.
+Use the filename printed by `npm pack` if the package version differs. For
+Artifact Panes, pack `./artifact-panes`; for Browser Bridge, pack
+`./dsh-browser-bridge/plugin` (not the Browser Bridge repository subdirectory
+itself). Use your target profile instead of `web` when installing elsewhere.
 
-Requirements: Windows 10/11 for the computer-use engine (UI Automation, `PrintWindow`,
-`Windows.Media.Ocr`), Node.js for the CDP helper, `ffmpeg` on `PATH` for clip
-encoding, Chrome/Edge for the browser tools.
+- **Computer Use** bundles its PowerShell engine. It needs Windows 10/11 for
+  desktop input, screenshots and OCR, and FFmpeg on `PATH` only for video clips.
+  It does not include a CDP helper.
+- **Browser Bridge** is separate and requires Chrome or Edge with the extension
+  and native messaging host. Follow the [Browser Bridge setup](dsh-browser-bridge/README.md#install-once-done-by-the-user).
 
 ## Verification
 
