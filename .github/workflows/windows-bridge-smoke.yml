@@ -91,7 +91,7 @@ jobs:
             return await new Promise((yes, no) => {
               const child = spawn(process.execPath, [bridge], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
               let out = '', err = '';
-              const timer = setTimeout(() => child.kill(), 12000);
+              const timer = setTimeout(() => child.kill(), cmd === 'page.shot' ? 65000 : 12000);
               child.stdout.setEncoding('utf8').on('data', x => out += x);
               child.stderr.setEncoding('utf8').on('data', x => err += x);
               child.on('error', e => { clearTimeout(timer); no(e); });
@@ -130,7 +130,7 @@ jobs:
           }
           async function launch(profile) {
             browser = await puppeteer.launch({
-              headless: true, pipe: true, enableExtensions: true, timeout: 30000,
+              headless: false, pipe: true, enableExtensions: true, timeout: 30000,
               userDataDir: join(tmp, profile),
               args: ['--no-first-run', '--disable-background-networking', '--no-default-browser-check'],
             });
@@ -165,16 +165,24 @@ jobs:
             await call('ax.setValue', { ...args, index: field.index, value: '' });
             assert.equal(await pa.$eval('#value', x => x.value), '');
             assert.equal(await pb.$eval('#value', x => x.value), 'initial');
-            const shot = join(tmp, 'fixture.png');
-            await call('page.shot', { ...args, out: shot });
-            assert.ok((await stat(shot)).size > 100);
-            assert.equal((await readFile(shot)).subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
-            await call('page.navigate', { ...args, url: base + 'next' });
+            console.log('PASS: trusted click A=1 B=0, clearing A only');
+          const shots = [];
+          for (const [label, page] of [['foreground', pa], ['background', pb]]) {
+            await page.bringToFront();
+            const shot = join(tmp, label + '.png');
+            try {
+              await call('page.shot', { ...args, out: shot });
+              assert.ok((await stat(shot)).size > 100);
+              assert.equal((await readFile(shot)).subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+              console.log('PASS: Bridge PNG with A in ' + label);
+            } catch (e) { shots.push(label + ': ' + e.message); console.log('FAIL: ' + shots.at(-1)); }
+          }
+          await call('page.navigate', { ...args, url: base + 'next' });
             await negative('ax.click', { ...args, index: button.index }, /snapshot|stale/i);
             await call('tabs.release', args);
             const released = await call('ping');
             assert.ok(!released.attached.includes(a.id) && !released.claimed.includes(a.id));
-            console.log('PASS: real MV3 + Windows host, trusted click A=1 B=0, clearing A only, PNG, stale index, release');
+            console.log('PASS: real MV3 + Windows host, stale index refusal and release');
             await browser.close(); browser = undefined;
             await until(async () => {
               const alive = await send('ping').then(r => r.ok, () => false);
@@ -183,6 +191,7 @@ jobs:
             await launch('second');
             assert.deepEqual(counts, { a: ['true'], b: [] }, 'input was replayed');
             console.log('PASS: new Chrome process and fresh profile reconnect without replay');
+          assert.deepEqual(shots, [], 'PNG failures: ' + shots.join('; '));
           } finally {
             try { await browser?.close(); } finally {
               server.closeAllConnections();
@@ -195,3 +204,66 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'smoke script syntax check failed' }
           node smoke.mjs
           if ($LASTEXITCODE -ne 0) { throw 'Windows smoke failed' }
+      - name: Exercise native Computer Use on two synthetic Windows forms
+        if: always()
+        shell: powershell
+        run: |
+          if (-not [Environment]::UserInteractive -or (Get-Process -Id $PID).SessionId -eq 0) { throw 'No interactive runner session for desktop smoke' }
+          $lab = (New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP 'dsh-desktop-fixture')).FullName
+          $fixture = Join-Path $lab 'fixture.ps1'
+          @'
+          param([string]$Lab)
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $ErrorActionPreference = 'Stop'
+          function New-Fixture([string]$name, [int]$x, [Drawing.Color]$color) {
+            $form = New-Object Windows.Forms.Form
+            $form.Text = "DSH QA CI Fixture $name"
+            $form.StartPosition = 'Manual'
+            $form.Location = New-Object Drawing.Point($x, 70)
+            $form.ClientSize = New-Object Drawing.Size(300, 210)
+            $form.BackColor = $color
+            $button = New-Object Windows.Forms.Button
+            $button.Text = "Target $name"
+            $button.SetBounds(35, 45, 130, 48)
+            $button.Tag = Join-Path $Lab "$name.clicks"
+            $button.Add_Click({ param($s, $e) [IO.File]::AppendAllText([string]$s.Tag, 'X') })
+            $form.Controls.Add($button)
+            return $form
+          }
+          $a = New-Fixture 'A' 30 ([Drawing.Color]::Orange)
+          $b = New-Fixture 'B' 410 ([Drawing.Color]::Purple)
+          $a.Show()
+          $b.Show()
+          [IO.File]::WriteAllText((Join-Path $Lab 'ready'), 'ready')
+          [Windows.Forms.Application]::Run()
+          '@ | Set-Content -Encoding UTF8 -LiteralPath $fixture
+          $engine = Join-Path $env:GITHUB_WORKSPACE 'dsh-computer-use\tools\cua.ps1'
+          $process = Start-Process -FilePath powershell.exe -ArgumentList @('-NoProfile','-STA','-WindowStyle','Hidden','-File',('"' + $fixture + '"'),('"' + $lab + '"')) -PassThru
+          try {
+            $until = (Get-Date).AddSeconds(12)
+            while (!(Test-Path (Join-Path $lab 'ready')) -and (Get-Date) -lt $until) { Start-Sleep -Milliseconds 200 }
+            if (!(Test-Path (Join-Path $lab 'ready'))) { throw 'GUI fixture did not start' }
+            $a = 'DSH QA CI Fixture A'
+            $cuaArgs = @('-NoProfile','-File',$engine)
+            & powershell.exe @cuaArgs -Action click -Window $a -Client -X 75 -Y 68
+            if ($LASTEXITCODE -ne 0) { throw 'native window-relative click failed' }
+            Start-Sleep -Milliseconds 300
+            if ([IO.File]::ReadAllText((Join-Path $lab 'A.clicks')) -ne 'X' -or (Test-Path (Join-Path $lab 'B.clicks'))) {
+              throw 'wrong or repeated pointer input'
+            }
+            Write-Host 'PASS: native Windows click, one event in A and none in B'
+            Add-Type -AssemblyName System.Drawing
+            $shot = Join-Path $lab 'A-crop.png'
+            & powershell.exe @cuaArgs -Action shot -Window $a -Client -Method screen -X 180 -Y 100 -Width 70 -Height 50 -Path $shot
+            if ($LASTEXITCODE -ne 0 -or !(Test-Path $shot)) { throw 'native fixture crop failed' }
+            $bmp = New-Object Drawing.Bitmap($shot)
+            try {
+              $c = $bmp.GetPixel(35, 25)
+              if ($bmp.Width -ne 70 -or $bmp.Height -ne 50 -or $c.R -lt 240 -or $c.G -lt 140 -or $c.G -gt 190 -or $c.B -gt 20) {
+                throw "wrong fixture pixels or crop size: $c @ $($bmp.Width)x$($bmp.Height)"
+              }
+            } finally { $bmp.Dispose() }
+            Write-Host 'PASS: native 70x50 window-relative crop contains the expected fixture color'
+          } finally {
+            if (!$process.HasExited) { Stop-Process -Id $process.Id }
+          }
