@@ -369,3 +369,18 @@ await settle();
 assert.deepEqual(captures, ['sess-1'], 'the normal same-chat capture still runs');
 assert.equal(latest()['sess-1'].at(-1).screenshot, 'synthetic-sess-1.png');
 console.log('PASS: visible strip, origin session, delayed capture guard and same-chat capture');
+
+ 
+globalThis.fetch = async (url) => {
+  assert.equal(url, '/artifact-panes/screenshot');
+  return { ok: false, status: 500, json: async () => ({ ok: false, error: 'WINDOW_CAPTURE_UNAVAILABLE' }) };
+};
+tree = openFixtureNote('Keep the note when capture fails');
+byText(tree, 'Save')[0].props.onClick();
+await settle();
+tree = render(overlay, { currentSessionId: 'sess-1' });
+assert.equal(latest()['sess-1'].at(-1).note, 'Keep the note when capture fails');
+assert.equal(latest()['sess-1'].at(-1).screenshot, '');
+const toast = findNodes(tree, n => n.props?.className === 'dsh-ann-toast').at(-1);
+assert.ok(toast?.children.flat(Infinity).includes('Annotation saved without a screenshot'), 'show explicit feedback without discarding the note');
+console.log('PASS: failed window capture leaves the annotation and clearly reports missing image');
