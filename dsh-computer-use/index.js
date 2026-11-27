@@ -290,7 +290,7 @@ export const TOOLS = [
   },
   {
     name: 'computer_shot',
-    description: 'Screenshot a window or the screen. method "print" captures the window even when it is covered by other apps (Chromium/Electron supported); "screen" copies visible pixels. With width+height it returns a cropped region. The image is attached to the result, so it appears in the chat.',
+    description: 'Screenshot a window or the screen. method "print" captures the window even when it is covered by other apps (Chromium/Electron supported); "screen" copies visible pixels. For a crop, supply both positive width and height (x and y default to 0). The image is attached to the result, so it appears in the chat.',
     parameters: {
       window: { type: 'string', description: 'Window title or process name substring' },
       pid: { type: 'integer', description: 'Target this process id instead of a title' },
@@ -561,6 +561,12 @@ export function apply(ctx, config = {}) {
               }
             },
             execute: async (args) => {
+              if (spec.name === 'computer_shot' &&
+                  [args.x, args.y, args.width, args.height].some(value => value !== undefined) &&
+                  (!Number.isInteger(args.width) || args.width <= 0 ||
+                   !Number.isInteger(args.height) || args.height <= 0)) {
+                return { ok: false, text: 'INVALID_REGION: provide both positive width and height for a crop. No screenshot taken.' };
+              }
               const { engine } = await import('./tools/engine.mjs');
 
               // Whole-screen input and a fresh ESC stop both require the user's consent.

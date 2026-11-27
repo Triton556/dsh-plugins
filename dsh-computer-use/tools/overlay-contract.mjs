@@ -128,3 +128,16 @@ assert.equal(animation.image?.attachmentId, 'fixture');
 assert.equal(savedImages[0]?.mediaType, 'image/gif');
 assert.equal(savedImages[0]?.data.toString(), 'fake GIF payload');
 console.log('PASS: pathless GIF attaches itself, not a PNG poster');
+
+// Supplying partial or invalid crop arguments must never cause a full capture.
+let shotCalls = 0;
+globalThis.dshTestEngine = async () => { shotCalls++; return { ok: true, text: 'fixture.png' }; };
+const shot = tools.get('computer_shot');
+for (const args of [{ width: 75 }, { height: 40 }, { x: 20, y: 3 }, { width: 0, height: 20 }, { width: 40, height: -1 }]) {
+  assert.match((await shot.execute(args)).text, /^INVALID_REGION:/);
+}
+assert.equal(shotCalls, 0);
+assert.equal((await shot.execute({ window: 'Fixture' })).ok, true);
+assert.equal((await shot.execute({ window: 'Fixture', width: 40, height: 25 })).ok, true);
+assert.equal(shotCalls, 2);
+console.log('PASS: malformed crops are refused before capture; full and valid crops still dispatch');
