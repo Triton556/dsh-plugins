@@ -82,6 +82,7 @@ if (-not ('Cua.Native' -as [type])) {
 [DllImport("user32.dll")] public static extern void mouse_event(uint flags, int dx, int dy, int data, System.UIntPtr extra);
 [DllImport("user32.dll")] public static extern bool SetForegroundWindow(System.IntPtr hWnd);
 [DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr hWnd, int cmd);
+[DllImport("user32.dll")] public static extern bool ShowWindowAsync(System.IntPtr hWnd, int cmd);
 [DllImport("user32.dll")] public static extern bool IsIconic(System.IntPtr hWnd);
 [DllImport("user32.dll")] public static extern System.IntPtr GetForegroundWindow();
 [DllImport("user32.dll")] public static extern bool SetWindowPos(System.IntPtr hWnd, System.IntPtr after, int x, int y, int cx, int cy, uint flags);
@@ -158,10 +159,14 @@ function Get-WindowHandle([string]$name) {
 
 function Focus-Window([System.IntPtr]$h) {
   if ($h -eq [System.IntPtr]::Zero) { return }
-  if ([Cua.Native]::IsIconic($h)) { [void][Cua.Native]::ShowWindow($h, 9) }  # SW_RESTORE
-  [void][Cua.Native]::ShowWindow($h, 5)
+  # Do not call ShowWindow on a visible target. The first synchronous call
+  # can consume STARTUPINFO's SW_HIDE from the headless PowerShell worker and
+  # hide the other app instead of showing it. Only request an async restore
+  # when the user-specified target is actually minimized.
+  if ([Cua.Native]::IsIconic($h)) { [void][Cua.Native]::ShowWindowAsync($h, 9) }  # SW_RESTORE
   for ($i = 0; $i -lt 3; $i++) {
-    if ([Cua.Native]::GetForegroundWindow() -eq $h) { return }
+    if ([Cua.Native]::GetForegroundWindow() -eq $h -and
+        [Cua.Native]::IsWindowVisible($h) -and -not [Cua.Native]::IsIconic($h)) { return }
     [void][Cua.Native]::SetForegroundWindow($h)
     Start-Sleep -Milliseconds 60
   }

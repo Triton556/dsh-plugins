@@ -19,7 +19,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'git fetch failed' }
           git checkout --detach FETCH_HEAD
           if ($LASTEXITCODE -ne 0 -or (git rev-parse HEAD) -ne $env:GITHUB_SHA) { throw 'wrong checkout' }
-      - name: Record native engine, WPF painter and fixture timing
+      - name: Record production wrapper, native engine and WPF timing
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
