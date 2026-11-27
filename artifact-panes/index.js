@@ -751,6 +751,43 @@ export function apply(ctx) {
     },
   }), 'artifact-panes: state route')
 
+  // Annotation images belong to the chat that created them. Never fall back
+  // to the newest session or the server cwd for a permanent image.
+  const shotSessionId = (id) => typeof id === 'string' && /^[A-Za-z0-9_-]{1,256}$/.test(id)
+  async function annotationShotRoot(id, allowClosed) {
+    try {
+      const sessions = ctx.get('sessions')
+      const list = sessions && typeof sessions.list === 'function' ? sessions.list() : []
+      const hit = (list || []).find((session) => session?.id === id)
+      if (hit) {
+        const cwd = hit.header?.cwd
+        return typeof cwd === 'string' && isAbsolute(cwd) ? cwd : undefined
+      }
+    } catch (e) { return undefined }
+    if (allowClosed) {
+      const record = (await closedWorkspaceRecords()).find(({ indexId }) => indexId === id)
+      if (record && isAbsolute(record.cwd)) return record.cwd
+    }
+    return undefined
+  }
+
+  const shotFolder = '.dsh/artifact-panes/shots'
+  const shotStamp = '[0-9]{4}(?:-[0-9]{2}){2}T(?:[0-9]{2}-){3}[0-9]{3}Z'
+  const shotName = new RegExp('^(preview-)?' + shotStamp + '[.]png$')
+  async function scopedShotFolder(root, create) {
+    const base = await realpath(root)
+    let dir = base
+    for (const part of shotFolder.split('/')) {
+      const next = join(dir, part)
+      if (create) {
+        try { await mkdir(next) } catch (error) { if (error.code !== 'EEXIST') throw error }
+      }
+      dir = await realpath(next)
+      if (!within(base, dir) || !(await stat(dir)).isDirectory()) throw new Error('invalid screenshot folder')
+    }
+    return dir
+  }
+
   ctx.effect(() => webServer.register({
     kind: 'exact',
     path: '/artifact-panes/screenshot',
@@ -758,19 +795,19 @@ export function apply(ctx) {
       if (req.method !== 'POST') { sendJson(res, 405, { ok: false, error: 'method not allowed' }); return }
       const payload = await readJsonBody(req, res)
       if (!payload || typeof payload !== 'object') return
-      const fs = ctx.get('fs')
-      const root = await resolveLibraryRoot(ctx, fs)
-      if (!root) { sendJson(res, 500, { ok: false, error: 'workspace not resolved' }); return }
+      const preview = payload.preview === true
+      if (!preview && !shotSessionId(payload.sessionId)) { sendJson(res, 400, { ok: false, error: 'sessionId is required' }); return }
+      const root = preview ? await resolveLibraryRoot(ctx, ctx.get('fs')) : await annotationShotRoot(payload.sessionId, false)
+      if (!root) { sendJson(res, 404, { ok: false, error: 'workspace not resolved' }); return }
       const rect = payload.rect && typeof payload.rect === 'object' ? payload.rect : {}
       const x = Math.max(0, Math.round(Number(rect.x) || 0))
       const y = Math.max(0, Math.round(Number(rect.y) || 0))
       const w = Math.max(1, Math.round(Number(rect.w) || 0))
       const h = Math.max(1, Math.round(Number(rect.h) || 0))
       const pad = Math.min(48, Math.max(0, Math.round(Number(payload.padding) || 12)))
-      const dir = abs(root, '.dsh/artifact-panes/shots')
-      const preview = payload.preview === true
       try {
-        await mkdir(dir, { recursive: true })
+        if (process.platform !== 'win32') throw new Error('screenshot is supported on Windows only in this build')
+        const dir = await scopedShotFolder(root, true)
         if (preview) {
           try {
             for (const name of await readdir(dir)) {
@@ -781,17 +818,13 @@ export function apply(ctx) {
           } catch (e) { /* first preview */ }
         }
         const file = dir + '/' + (preview ? 'preview-' : '') + new Date().toISOString().replace(/[:.]/g, '-') + '.png'
-        if (process.platform === 'win32') {
-          const script = fileURLToPath(new URL('./shot.ps1', import.meta.url))
-          const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script,
-            '-Out', file, '-X', String(x), '-Y', String(y), '-W', String(w), '-H', String(h), '-Pad', String(pad)]
-          await new Promise((resolve, reject) => {
-            execFile('powershell.exe', args, { windowsHide: true, timeout: 15000 }, (error) => (error ? reject(error) : resolve()))
-          })
-        } else {
-          throw new Error('screenshot is supported on Windows only in this build')
-        }
-        sendJson(res, 200, { ok: true, path: relative(root, file).replace(/\\/g, '/'), file })
+        const script = fileURLToPath(new URL('./shot.ps1', import.meta.url))
+        const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script,
+          '-Out', file, '-X', String(x), '-Y', String(y), '-W', String(w), '-H', String(h), '-Pad', String(pad)]
+        await new Promise((resolve, reject) => {
+          execFile('powershell.exe', args, { windowsHide: true, timeout: 15000 }, (error) => (error ? reject(error) : resolve()))
+        })
+        sendJson(res, 200, { ok: true, path: shotFolder + '/' + relative(dir, file), file })
       } catch (error) {
         sendJson(res, 500, { ok: false, error: error && error.message ? String(error.message) : 'screenshot failed' })
       }
@@ -803,18 +836,24 @@ export function apply(ctx) {
     path: '/artifact-panes/shot',
     handler: async (req, res) => {
       if (req.method !== 'GET') { sendJson(res, 405, { ok: false, error: 'method not allowed' }); return }
-      const fs = ctx.get('fs')
-      const root = await resolveLibraryRoot(ctx, fs)
-      if (!root) { sendJson(res, 500, { ok: false, error: 'workspace not resolved' }); return }
-      let requested = ''
+      const query = new URL(req.url || '/', 'http://127.0.0.1').searchParams
+      const prefix = shotFolder + '/'
+      const requested = query.get('path') || ''
+      const basename = requested.startsWith(prefix) ? requested.slice(prefix.length) : ''
+      const match = shotName.exec(basename)
+      const diagnostic = basename === 'selftest.json'
+      if (!match && !diagnostic) { sendJson(res, 400, { ok: false, error: 'invalid path' }); return }
+      const preview = diagnostic || !!match?.[1]
+      const sessionId = query.get('sessionId')
+      if (!preview && !shotSessionId(sessionId)) { sendJson(res, 400, { ok: false, error: 'sessionId is required' }); return }
+      const root = preview ? await resolveLibraryRoot(ctx, ctx.get('fs')) : await annotationShotRoot(sessionId, true)
+      if (!root) { sendJson(res, 404, { ok: false, error: 'workspace not resolved' }); return }
       try {
-        const url = new URL(req.url, 'http://127.0.0.1')
-        requested = String(url.searchParams.get('path') || '').replace(/\\/g, '/')
-      } catch (e) {}
-      if (!requested.startsWith('.dsh/artifact-panes/shots/')) { sendJson(res, 400, { ok: false, error: 'invalid path' }); return }
-      try {
-        const buffer = await readFile(abs(root, requested))
-        res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store', 'Content-Length': buffer.length })
+        const dir = await scopedShotFolder(root, false)
+        const file = await realpath(join(dir, basename))
+        if (!within(dir, file) || !(await stat(file)).isFile()) throw new Error('invalid screenshot file')
+        const buffer = await readFile(file)
+        res.writeHead(200, { 'Content-Type': diagnostic ? 'application/json' : 'image/png', 'Cache-Control': 'no-store', 'Content-Length': buffer.length })
         res.end(buffer)
       } catch (error) {
         sendJson(res, 404, { ok: false, error: 'not found' })

@@ -223,6 +223,7 @@ const byText = (tree, text) => findNodes(tree, (n) => n.type === 'button' && (n.
 // ---- install both halves --------------------------------------------------
 let overlay;   // GlobalAnnotations (shell.overlay)
 let dock;      // AnnotationDock (conversation.input.dock)
+let transcript;
 module.apply({
   effect(fn) { return fn(); },
   locale: { register: () => () => {} },
@@ -232,6 +233,7 @@ module.apply({
     register: (options, comp) => {
       if (options.name === 'shell.overlay') overlay = comp;
       if (options.name === 'conversation.input.dock') dock = comp;
+      if (options.name === 'conversation.user.text.node') transcript = comp;
       return () => {};
     },
   },
@@ -323,9 +325,9 @@ console.log('  draft length:', draft.length, 'chars');
 // A programmatic chat switch can leave the draft open while the old strip
 // remains mounted. Saving must keep the note attributed to A without reading B.
 const captures = [];
-globalThis.fetch = async (url) => {
+globalThis.fetch = async (url, options) => {
   if (url !== '/artifact-panes/screenshot') return new Promise(() => {});
-  captures.push(visibleSession);
+  captures.push([visibleSession, JSON.parse(options.body).sessionId]);
   return { json: async () => ({ ok: true, path: 'synthetic-' + visibleSession + '.png' }) };
 };
 function setVisibleSession(id) {
@@ -366,7 +368,7 @@ setVisibleSession('sess-1');
 tree = openFixtureNote('A note with screenshot');
 byText(tree, 'Save')[0].props.onClick();
 await settle();
-assert.deepEqual(captures, ['sess-1'], 'the normal same-chat capture still runs');
+assert.deepEqual(captures, [['sess-1', 'sess-1']], 'the normal same-chat capture still runs');
 assert.equal(latest()['sess-1'].at(-1).screenshot, 'synthetic-sess-1.png');
 console.log('PASS: visible strip, origin session, delayed capture guard and same-chat capture');
 
@@ -384,3 +386,11 @@ assert.equal(latest()['sess-1'].at(-1).screenshot, '');
 const toast = findNodes(tree, n => n.props?.className === 'dsh-ann-toast').at(-1);
 assert.ok(toast?.children.flat(Infinity).includes('Annotation saved without a screenshot'), 'show explicit feedback without discarding the note');
 console.log('PASS: failed window capture leaves the annotation and clearly reports missing image');
+
+// A sent legacy annotation has no session embedded in its JSON. The transcript
+// slot's owner-supplied session still scopes its thumbnail even when B is open.
+setVisibleSession('sess-2');
+const sent = transcript({ sessionId: 'sess-1', node: { data: { items: [{ screenshot: 'synthetic-sess-1.png' }] } } });
+const sentImg = findNodes(sent, n => n.type === 'img')[0];
+assert.equal(new URL(sentImg.props.src, 'http://localhost').searchParams.get('sessionId'), 'sess-1');
+console.log('PASS: legacy sent thumbnails use the transcript owner, not the active chat');
