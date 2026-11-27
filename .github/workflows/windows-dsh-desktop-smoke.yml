@@ -167,24 +167,7 @@ jobs:
             } 'Official Desktop did not expose the documented API key option' 35
             Invoke-DesktopControl $keyOption
             $later = Wait-For {
-              Find-VisibleDesktopControl '^(?:Set up later|Skip for now|Do this later|稍后设置|跳过)
-            } 'No documented set-up-later control; no key or account was entered' 20
-            Invoke-DesktopControl $later
-            $workspace = Wait-For {
-              Find-VisibleDesktopControl '^(?:New chat|New session|Create a session|Workspace files|Start a conversation|New conversation|Plugins|Artifacts|新建会话)$'
-            } 'Set up later did not expose a workspace marker on the signed build' 45
-            Write-Host "PASS: reached the signed Desktop workspace without credentials: $($workspace.Current.Name)"
-            $maybePlugin = Find-VisibleDesktopControl '^Plugins$'
-            if ($maybePlugin) {
-              Invoke-DesktopControl $maybePlugin
-              $listed = Wait-For {
-                Find-VisibleDesktopControl '^(?:dsh-artifact-panes|dsh-browser-bridge|dsh-computer-use|Artifact Panes|Computer Use|DSH Browser Bridge)$'
-              } 'Desktop Plugins is visible but QA bundle names were not found' 15
-              Write-Host "PASS: at least one installed QA bundle is visible in the application UI: $($listed.Current.Name)"
-            }
-            Write-Host 'Scope: signed Desktop workspace entry and packaged profile only; no model call, Artifact Panes capture or installed DSH tool dispatch was asserted.'
-          } finally { Stop-TestDesktop }
-
+              Find-VisibleDesktopControl '^(?:Set up later|Skip for now|Do this later|稍后设置|跳过)$'
             } 'No documented set-up-later control; no key or account was entered' 20
             Invoke-DesktopControl $later
             $workspace = Wait-For {
