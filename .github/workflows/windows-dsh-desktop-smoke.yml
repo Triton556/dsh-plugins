@@ -19,6 +19,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'git fetch failed' }
           git checkout --detach FETCH_HEAD
           if ($LASTEXITCODE -ne 0 -or (git rev-parse HEAD) -ne $env:GITHUB_SHA) { throw 'wrong checkout' }
+      - name: Test annotation window-capture safety
+        shell: pwsh
+        run: |
+          node --test artifact-panes/test/annotations.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Annotation state regression failed' }
+          powershell.exe -NoProfile -File artifact-panes/test/window-capture-contract.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Window capture isolation contract failed' }
       - name: Verify vendor signature and exercise the packaged desktop profile
         shell: pwsh
         run: |
@@ -260,6 +267,28 @@ jobs:
                 Write-Host "PASS: installed QA bundle visible on the real Plugins page: $($p.Key) [$($found.Current.Name)]"
               }
               Capture-TestDesktop 'plugins'
+              $packagedShot = Join-Path $env:DSH_HOME 'profiles\desktop\node_modules\dsh-artifact-panes\shot.ps1'
+              if (!(Test-Path -LiteralPath $packagedShot)) { throw 'Artifact Panes capture script missing from the installed bundle' }
+              $sourceShot = Join-Path $env:GITHUB_WORKSPACE 'artifact-panes\shot.ps1'
+              if ((Get-FileHash -Algorithm SHA256 $packagedShot).Hash -ne (Get-FileHash -Algorithm SHA256 $sourceShot).Hash) { throw 'Installed capture is not the exact QA script' }
+              $destination = Join-Path $env:RUNNER_TEMP 'dsh-desktop-proof\artifact-panes-native-crop.png'
+              & powershell.exe -NoProfile -File $packagedShot -Out $destination -X 278 -Y 41 -W 215 -H 70 -Pad 0
+              if ($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $destination)) { throw 'Native installed window capture failed' }
+              Add-Type -AssemblyName System.Drawing
+              $crop = New-Object System.Drawing.Bitmap $destination
+              try {
+                $dark = 0
+                $light = 0
+                for ($x=0; $x -lt $crop.Width; $x+=2) {
+                  for ($y=0; $y -lt $crop.Height; $y+=2) {
+                    $c = $crop.GetPixel($x, $y)
+                    if ($c.R -lt 120 -and $c.G -lt 120 -and $c.B -lt 120) { $dark++ }
+                    if ($c.R -gt 190 -and $c.G -gt 190 -and $c.B -gt 190) { $light++ }
+                  }
+                }
+                if ($crop.Width -ne 215 -or $crop.Height -ne 70 -or $dark -lt 15 -or $light -lt 500) { throw 'Signed Desktop target crop blank or wrong geometry' }
+              } finally { $crop.Dispose() }
+              Write-Host "PASS: installed Artifact Panes helper captured the real signed Desktop window (215x70, dark=$dark light=$light)"
             } catch {
               $outline = @(Get-AppUi | Where-Object { !$_.Current.IsOffscreen -and $_.Current.Name -and $_.Current.Name.Length -le 110 -and $_.Current.Name -match '(?i)plugin|installed|settings|artifact|browser bridge|computer use|session' } |
                 ForEach-Object { "$($_.Current.ControlType.ProgrammaticName) $($_.Current.Name)" } | Sort-Object -Unique | Select-Object -First 35)
