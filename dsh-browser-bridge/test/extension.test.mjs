@@ -57,3 +57,28 @@ test('a snapshot interrupted by navigation cannot repopulate the cache', async (
   assert.equal(fresh.url, url);
   assert.equal(vm.runInContext('snapshotNode(14, 0).name', context), 'Page B');
 });
+
+test('ambiguous tabMatch fails closed instead of selecting the first tab', async () => {
+  chrome.tabs.query = async () => [
+    { id: 15, title: 'QA Order A', url: 'https://fixture.invalid/a', active: true },
+    { id: 16, title: 'QA Order B', url: 'https://fixture.invalid/b' },
+  ];
+  await assert.rejects(vm.runInContext('pickTab({tabMatch: "QA Order"})', context), /matched 2 tabs.*tabId/i);
+  assert.equal(await vm.runInContext('pickTab({tabMatch: "QA Order B"})', context), 16);
+  assert.equal(await vm.runInContext('pickTab({tabId: 15, tabMatch: "QA Order"})', context), 15);
+});
+
+test('an incomplete wait request does not attach to a tab', async () => {
+  let calls = 0;
+  chrome.debugger.attach = async () => { calls++; };
+  await assert.rejects(vm.runInContext('run("page.wait", {tabId: 17})', context), /selector or text is required/);
+  assert.equal(calls, 0);
+});
+
+test('wait obeys the same internal-page restriction as other readers', async () => {
+  let calls = 0;
+  chrome.tabs.get = async () => ({ url: 'chrome://version', status: 'complete' });
+  chrome.debugger.attach = async () => { calls++; throw new Error('Unexpected debugger attachment'); };
+  await assert.rejects(vm.runInContext('run("page.wait", {tabId: 18, selector: "body"})', context), /internal pages are not drivable/i);
+  assert.equal(calls, 0);
+});

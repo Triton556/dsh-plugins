@@ -162,9 +162,11 @@ async function pickTab(args) {
   if (args.tabId !== undefined && args.tabId !== null) return Number(args.tabId);
   const all = await tabsQuery({});
   if (args.tabMatch) {
-    const needle = String(args.tabMatch).toLowerCase();
-    const hit = all.find((t) => (t.title || '').toLowerCase().includes(needle) || (t.url || '').toLowerCase().includes(needle));
-    if (hit) return hit.id;
+    const needle = String(args.tabMatch).trim().toLowerCase();
+    if (!needle) throw new Error('tabMatch must contain a title or URL substring; use tabs.list or pass tabId');
+    const hits = all.filter((t) => (t.title || '').toLowerCase().includes(needle) || (t.url || '').toLowerCase().includes(needle));
+    if (hits.length === 1) return hits[0].id;
+    if (hits.length > 1) throw new Error('tabMatch matched ' + hits.length + ' tabs; use tabs.list and pass an exact tabId');
     throw new Error('no tab matching ' + args.tabMatch);
   }
   const active = all.find((t) => t.active);
@@ -514,11 +516,13 @@ async function run(cmd, args) {
     }
 
     case 'page.wait': {
+      if (!args.selector && !args.text) throw new Error('selector or text is required');
       const tabId = await pickTab(args);
+      const tab = await tabsGet(tabId);
+      assertPage(tab.url);
       await attach(tabId);
       const timeout = Math.min(Number(args.timeoutMs) > 0 ? Number(args.timeoutMs) : 10000, 30000);
       const started = Date.now();
-      if (!args.selector && !args.text) throw new Error('selector or text is required');
       const expression = args.selector
         ? `(function(){ return !!document.querySelector(${JSON.stringify(args.selector)}); })()`
         : `(function(){ return document.body ? document.body.innerText.includes(${JSON.stringify(args.text)}) : false; })()`;
