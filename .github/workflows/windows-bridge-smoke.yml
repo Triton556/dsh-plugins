@@ -28,6 +28,14 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or !(Test-Path host/NativeHost.exe)) { throw 'native host build failed' }
           powershell.exe -NoProfile -File install-host.ps1
           if ($LASTEXITCODE -ne 0) { throw 'native host registration failed' }
+      - name: Record interactive desktop availability (no desktop input)
+        shell: powershell
+        run: |
+          Add-Type -AssemblyName System.Windows.Forms
+          $session = (Get-Process -Id $PID).SessionId
+          $screens = @([Windows.Forms.Screen]::AllScreens)
+          $bounds = @($screens | ForEach-Object { $_.Bounds.ToString() }) -join '; '
+          Write-Host "UI capability only: UserInteractive=$([Environment]::UserInteractive), SessionId=$session, screen count=$($screens.Count), bounds=$bounds"
       - name: Test the real extension and native messaging transport on loopback
         shell: pwsh
         run: |
@@ -144,7 +152,7 @@ jobs:
             const { tabs } = await call('tabs.list');
             const a = tabs.find(t => t.url === base + 'a'), b = tabs.find(t => t.url === base + 'b');
             assert.ok(a && b && a.id !== b.id, 'two fixture tab IDs missing');
-            await negative('ax.snapshot', { tabMatch: '/qa-bridge/' }, /ambig|multiple|matches/i);
+            await negative('ax.snapshot', { tabMatch: '/qa-bridge/' }, /matched 2 tabs.*exact tabId/i);
             await call('tabs.claim', { tabId: a.id, expectUrl: base + 'a', expectTitle: 'Bridge fixture' });
             const args = { tabId: a.id };
             const { nodes } = await call('ax.snapshot', args);
