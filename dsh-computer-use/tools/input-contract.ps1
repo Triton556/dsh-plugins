@@ -14,13 +14,18 @@ public struct POINT { public int X, Y; }
 public static System.IntPtr Foreground;
 public static System.IntPtr Hit;
 public static System.IntPtr Root;
+public static bool DpiExportsMissing;
+public static System.IntPtr DpiTarget;
+public static uint GetDpiForWindow(System.IntPtr h) { if (DpiExportsMissing) throw new System.EntryPointNotFoundException(); return h == DpiTarget ? 144u : 0u; }
+public static System.IntPtr GetWindowDpiAwarenessContext(System.IntPtr h) { if (DpiExportsMissing) throw new System.EntryPointNotFoundException(); return h == DpiTarget ? new System.IntPtr(-4) : System.IntPtr.Zero; }
+public static int GetAwarenessFromDpiAwarenessContext(System.IntPtr c) { return c.ToInt64() == -4 ? 2 : -1; }
 public static System.Collections.Generic.List<uint> MouseEvents = new System.Collections.Generic.List<uint>();
 public static void mouse_event(uint flags, uint x, uint y, uint data, System.UIntPtr extra) { MouseEvents.Add(flags); }
 public static System.IntPtr GetForegroundWindow() { return Foreground; }
 public static System.IntPtr WindowFromPoint(POINT p) { return Hit; }
 public static System.IntPtr GetAncestor(System.IntPtr h, uint flag) { return Root; }
 '@
-foreach ($name in @('Assert-Foreground','Assert-PointerTarget','Assert-ActionActive','Wait-ActionDelay','Invoke-MousePress')) {
+foreach ($name in @('Assert-Foreground','Assert-PointerTarget','Assert-ActionActive','Wait-ActionDelay','Invoke-MousePress','Get-TargetDpi')) {
   $fn = $ast.Find({ param($node)
     $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
   }, $true)
@@ -81,3 +86,14 @@ try {
   if (([Cua.Native]::MouseEvents -join ',') -ne '8,16') { throw 'Deadline did not release the right button' }
   Write-Output 'PASS: per-action stop and deadline release simulated mouse presses once; a cancelled action never presses'
 } finally { [IO.File]::Delete($stopSignal) }
+
+# One test HWND at 144 DPI must not become a system DPI guess for another HWND.
+[Cua.Native]::DpiTarget = $target
+$dpi = Get-TargetDpi $target
+if ($dpi.Dpi -ne 144 -or $dpi.Awareness -ne 'per-monitor-aware') { throw 'Target DPI not attributed to the exact HWND' }
+$missing = Get-TargetDpi $other
+if ($null -ne $missing.Dpi -or $missing.Awareness -ne 'unknown') { throw 'No-DPI result invented a DPI or awareness' }
+[Cua.Native]::DpiExportsMissing = $true
+$legacy = Get-TargetDpi $target
+if ($null -ne $legacy.Dpi -or $legacy.Awareness -ne 'unknown') { throw 'Unavailable APIs invented a DPI or awareness' }
+Write-Output 'PASS: window DPI from exact HWND, awareness and unknown/missing APIs without registry fallback'
