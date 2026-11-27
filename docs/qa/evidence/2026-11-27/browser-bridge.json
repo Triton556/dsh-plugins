@@ -1,0 +1,36 @@
+{
+  "browser": "149.0.7827.22",
+  "scope": "Real rendered Chromium page, production commands, Chrome API shim over Playwright pipe; not MV3 or native messaging",
+  "evidence": [
+    {
+      "title": "Command dispatcher ping via test shim (not native transfer)"
+    },
+    {
+      "title": "Two real matching tabs: baseline chooses first, patch requires exact ID"
+    },
+    {
+      "title": "Real AX roles, name, value and bounds"
+    },
+    {
+      "title": "Real wait: selector and text in iframe; absent marker times out"
+    },
+    {
+      "title": "Set and read back a Cyrillic field"
+    },
+    {
+      "title": "Explicit empty value reaches browser handler"
+    },
+    {
+      "title": "Trusted input and Ctrl+A/Backspace verified by actual field state"
+    },
+    {
+      "title": "Trusted button click happens only in intended tab"
+    },
+    {
+      "title": "Navigation and stale AX invalidation; new page confirmed"
+    },
+    {
+      "title": "Release closes the real browser CDP session in the shim"
+    }
+  ]
+}

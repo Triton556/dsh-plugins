@@ -1,0 +1,7 @@
+[
+  "A holds the selected artifact and an interactive count of 1",
+  "B holds its own different explicit selection",
+  "return to A restores the selected document without retaining old iframe state",
+  "B independently restores its own selection",
+  "when the last selected file disappears, return to the authorized picker and no iframe"
+]

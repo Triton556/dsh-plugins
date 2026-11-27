@@ -48,7 +48,7 @@ node bridge.mjs '{"cmd":"ping"}'
 Updating the extension later: the **Reload** button on its card in
 `chrome://extensions` (no reinstall needed).
 
-## Commands (M0: read-only transport)
+## Connection and observation commands
 
 | Command | Args | Result |
 | --- | --- | --- |
@@ -70,10 +70,10 @@ node bridge.mjs '{"cmd":"page.shot","args":{"tabMatch":"yourvm","out":"C:/temp/t
 
 ## Safety rules
 
-- One tab per claim, checked by title/url so a stale mention cannot grab a
-  different page.
-- Read-only in M0: no clicks, no typing, no navigation. Actions (`ax.click`,
-  `ax.setValue`, `input.type`, `input.key`, `page.navigate`) come in M1.
+- Claims mark a selected tab; they are not an exclusive lock across clients.
+  When claiming, pass the expected title or URL to reject a stale selection.
+- A title or URL substring must match exactly one tab. If it matches more than
+  one, list tabs and use an exact `tabId`.
 - No `eval`, no cookies, no history, no passwords вЂ” these are not commands at all.
 - The agent never installs or repairs the host; it runs `check.ps1` and asks the
   user to reinstall.
@@ -89,7 +89,7 @@ node bridge.mjs '{"cmd":"page.shot","args":{"tabMatch":"yourvm","out":"C:/temp/t
 | `build.ps1`, `install-host.ps1`, `check.ps1` | build, register, diagnose |
 | `genkey.cjs` | one-time extension key/id generator |
 
-## M1 actions (code ready, activation pending)
+## Input and navigation commands
 
 | Command | Args | Result |
 | --- | --- | --- |
@@ -99,8 +99,9 @@ node bridge.mjs '{"cmd":"page.shot","args":{"tabMatch":"yourvm","out":"C:/temp/t
 | `input.key` | `keys` (`ENTER`, `CTRL+A`, ...) | activates the tab first, then dispatches key events |
 | `page.navigate` | `url` | navigates and waits for `document.readyState === "complete"` |
 
-Attach retry: when Chrome drops the debugger (navigation, infobar cancel), the
-command re-attaches once and repeats instead of failing.
+If Chrome detaches after an input or navigation might already have run, the
+bridge reports an uncertain outcome. It does not replay the action. Verify the
+page state and refresh the accessibility snapshot before deciding what to do.
 
 **After changing extension code, press Reload on the extension card.** Stopping
 the service worker does not re-read the unpacked files (verified: killing the

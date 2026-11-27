@@ -1,0 +1,29 @@
+PASS: cordis contract satisfied
+PASS: caption text encoding verified
+PASS: mouse workers receive deadlines without forced termination
+PASS: consent, geometry streaming, target isolation, linger, error, STOP
+PASS: passive overlap, exclusive input, stale geometry callback
+PASS: pathless GIF attaches itself, not a PNG poster
+PASS: malformed crops are refused before capture; full and valid crops still dispatch
+PASS: script parsing, foreground/coverage guard, child HWND, Win32 INPUT layout (40 bytes)
+PASS: per-action stop and deadline release simulated mouse presses once; a cancelled action never presses
+PASS: full and cropped shots respect the requested backend; failed PrintWindow never saves a PNG
+PASS: requested containers, unique defaults, explicit paths/posters, and encoder failures with raw frames
+PASS: definitions accepted by the real host package
+
+Production encoder on Linux with synthetic RGB frames (no native desktop capture):
+gif
+codec_name=gif
+width=960
+height=752
+nb_read_frames=2
+gif
+codec_name=gif
+width=960
+height=752
+nb_read_frames=2
+MP4
+codec_name=h264
+width=38
+height=30
+nb_read_frames=2

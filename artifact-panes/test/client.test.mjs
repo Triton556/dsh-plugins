@@ -233,10 +233,10 @@ React.useState = (init) => {
     : (typeof init === 'function' ? init() : init);
   return [initial, (next) => { setters[i] = typeof next === 'function' ? next(initial) : next; }];
 };
-const renderBrowser = (state) => {
+const renderBrowser = (state, sessionId = 'sess-1') => {
   overrides = state;
   hookIndex = 0;
-  return browserSlot.component({ read: noRead, sessionId: 'sess-1' });
+  return browserSlot.component({ read: noRead, sessionId });
 };
 const openMenu = renderBrowser({ 0: ITEMS, 1: ITEMS[0], 3: true });
 const menuItems = findNodes(openMenu, (node) => node.props && node.props.role === 'menuitemradio');
@@ -279,6 +279,51 @@ const emptyLanding = renderBrowser({ 0: [], 1: null });
 const emptyText = findNodes(emptyLanding, (node) => Array.isArray(node.children)
   && node.children.some((child) => typeof child === 'string' && child.includes('Пока нет артефактов')));
 assert.ok(emptyText.length >= 1, 'empty landing explains the state instead of a blank pane');
+
+// Explicit selections survive a same-renderer chat change only when the
+// fresh host response still lists that exact file for that chat.
+{
+  const useEffect = React.useEffect;
+  const realFetch = globalThis.fetch;
+  let effects = [];
+  React.useEffect = (run) => effects.push(run);
+  function choose(sessionId, index) {
+    const picker = renderBrowser({ 0: ITEMS }, sessionId);
+    findNodes(picker, (node) => node.props?.role === 'menuitemradio')[index].props.onClick();
+  }
+  async function remount(sessionId, artifacts, ok = true, state = {}) {
+    effects = [];
+    for (const k of Object.keys(setters)) delete setters[k];
+    globalThis.fetch = async (url) => {
+      const query = new URL(String(url), 'https://example.invalid').searchParams;
+      assert.equal(query.get('sessionId'), sessionId, 'search is scoped to its owning chat');
+      return { json: async () => ({ ok, artifacts, root: 'C:/ws/artifacts' }) };
+    };
+    renderBrowser(state, sessionId);
+    const scan = effects.find((run) => String(run).includes('/artifact-panes/library?'));
+    assert.ok(scan, 'library scan is registered');
+    const dispose = scan();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    dispose();
+    return { item: setters[1], menuOpen: setters[3] };
+  }
+  try {
+    choose('return-a', 0);
+    choose('return-b', 1);
+    assert.deepEqual(await remount('return-a', ITEMS), { item: ITEMS[0], menuOpen: false });
+    assert.deepEqual(await remount('return-b', ITEMS), { item: ITEMS[1], menuOpen: false });
+    assert.deepEqual(await remount('return-new', ITEMS), { item: undefined, menuOpen: undefined });
+    assert.deepEqual(await remount('return-a', ITEMS, false), { item: undefined, menuOpen: undefined });
+    assert.deepEqual(await remount('return-a', [ITEMS[1]]), { item: undefined, menuOpen: undefined });
+    assert.deepEqual(await remount('return-a', ITEMS), { item: undefined, menuOpen: undefined });
+  } finally {
+    React.useEffect = useEffect;
+    globalThis.fetch = realFetch;
+  }
+}
 
 // Re-render cost: unchanged inputs must hand back the cached elements, so a
 // sidebar resize re-render does not rebuild the list or the iframe.
