@@ -1,0 +1,203 @@
+name: Windows Computer Use frame recording
+on:
+  push:
+    branches: ['qa/windows-frame-recording-2026-11-27']
+    paths: ['.github/workflows/windows-frame-recording.yml']
+permissions: {}
+jobs:
+  frame-recording:
+    if: github.repository == 'Triton556/dsh-plugins'
+    runs-on: windows-2025
+    timeout-minutes: 8
+    steps:
+      - name: Check out exact public QA revision
+        shell: pwsh
+        run: |
+          git init .
+          if ($LASTEXITCODE -ne 0) { throw 'git init failed' }
+          git fetch --depth 1 https://github.com/Triton556/dsh-plugins.git $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { throw 'git fetch failed' }
+          git checkout --detach FETCH_HEAD
+          if ($LASTEXITCODE -ne 0 -or (git rev-parse HEAD) -ne $env:GITHUB_SHA) { throw 'wrong checkout' }
+      - name: Record exact plugin wrapper and native window timing
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not [Environment]::UserInteractive -or (Get-Process -Id $PID).SessionId -eq 0) { throw 'No interactive Windows desktop' }
+          $lab = (New-Item -ItemType Directory (Join-Path $env:RUNNER_TEMP 'window-frame-proof')).FullName
+          $sandboxTmp=(New-Item -ItemType Directory (Join-Path $lab 'native-temp')).FullName
+          $env:TEMP=$sandboxTmp
+          $env:TMP=$sandboxTmp
+          $env:WFR_LAB=$lab
+          $fixture=Join-Path $lab 'fixture.ps1'
+          @'
+          param([string]$Lab)
+          $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class FrameQa {
+            [StructLayout(LayoutKind.Sequential)] public struct Point { public int X, Y; }
+            [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+            [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref Point p);
+            [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int key);
+            [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+            [DllImport("user32.dll")] public static extern IntPtr GetDC(IntPtr h);
+            [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr h, IntPtr dc);
+            [DllImport("gdi32.dll")] public static extern bool BitBlt(IntPtr dest, int x, int y, int w, int h, IntPtr src, int sx, int sy, uint op);
+            [DllImport("user32.dll")] public static extern bool GetCursorPos(out Point point);
+          }
+          '@
+          $script:a = New-Object Windows.Forms.Form
+          $a.Text = 'DSH QA Timing A'
+          $a.StartPosition = 'Manual'
+          $a.Location = New-Object Drawing.Point(28,62)
+          $a.ClientSize = New-Object Drawing.Size(330,235)
+          $a.BackColor = [Drawing.Color]::FromArgb(208,117,0)
+          $a.MaximizeBox = $false
+          $a.FormBorderStyle = [Windows.Forms.FormBorderStyle]::FixedSingle
+          $script:events = Join-Path $Lab 'input.csv'
+          [IO.File]::WriteAllText($events,"utcMs,event,x,y`r`n")
+          function Log-Input($name,$x,$y) {
+            [IO.File]::AppendAllText($script:events,("$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()),$name,$x,$y`r`n"))
+          }
+          $script:button = New-Object Windows.Forms.Button
+          $button.Text='Click test'
+          $button.SetBounds(42,50,125,40)
+          $button.Add_MouseDown({param($s,$e) Log-Input 'click-down' $e.X $e.Y; $s.Text='Button down'})
+          $button.Add_MouseUp({param($s,$e) Log-Input 'click-up' $e.X $e.Y; $s.Text='Click complete'})
+          $a.Controls.Add($button)
+          $script:drag = New-Object Windows.Forms.Panel
+          $drag.BackColor=[Drawing.Color]::FromArgb(237,159,22)
+          $drag.SetBounds(42,105,245,105)
+          $drag.Add_MouseDown({param($s,$e) Log-Input 'drag-down' $e.X $e.Y; $s.BackColor=[Drawing.Color]::FromArgb(251,185,28)})
+          $drag.Add_MouseUp({param($s,$e) Log-Input 'drag-up' $e.X $e.Y; $s.BackColor=[Drawing.Color]::FromArgb(237,159,22)})
+          $a.Controls.Add($drag)
+          $script:label=New-Object Windows.Forms.Label
+          $label.Text='Real fixture / native input'
+          $label.Font=New-Object Drawing.Font('Segoe UI',12,[Drawing.FontStyle]::Bold)
+          $label.AutoSize=$true
+          $label.Location=New-Object Drawing.Point(42,18)
+          $a.Controls.Add($label)
+          $script:armed=$false; $script:sent=$false; $script:pressAt=0; $script:i=0; $script:prevTag='';$script:origin=New-Object FrameQa+Point
+          $script:frames = Join-Path $Lab 'frames'
+          [void](New-Item -ItemType Directory $frames)
+          $script:stats = Join-Path $Lab 'samples.csv'
+          [IO.File]::WriteAllText($stats,"frame,utcMs,phase,blue,down,active,cursorX,cursorY`r`n")
+          function Sample-Frame {
+            $t=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+            $tag='baseline'
+            try { $tag=[IO.File]::ReadAllText((Join-Path $Lab 'phase.txt')).Trim() } catch {}
+            if (!$tag) { $tag=$script:prevTag }
+            if (!$tag) { $tag='baseline' }
+            $script:prevTag=$tag
+            $pressed=([FrameQa]::GetAsyncKeyState(1) -band 32768) -ne 0
+            $active=[FrameQa]::GetForegroundWindow() -eq $a.Handle
+            $p=New-Object FrameQa+Point;[void][FrameQa]::GetCursorPos([ref]$p)
+            $left=$script:origin.X-6;$top=$script:origin.Y-32
+            $bmp=New-Object Drawing.Bitmap(346,275)
+            $g=[Drawing.Graphics]::FromImage($bmp)
+            try {
+              $dest=$g.GetHdc();$src=[FrameQa]::GetDC([IntPtr]::Zero)
+              try {
+                if ($src -eq [IntPtr]::Zero -or ![FrameQa]::BitBlt($dest,0,0,346,275,$src,$left,$top,0x40CC0020)) { throw 'BitBlt failed' }
+              } finally {
+                $g.ReleaseHdc($dest); if($src -ne [IntPtr]::Zero){[void][FrameQa]::ReleaseDC([IntPtr]::Zero,$src)}
+              }
+              $blue=0
+              for($j=7;$j -lt 18;$j++){
+                for($k=144;$k -lt 157;$k+=3) {$blue=[Math]::Max($blue,$bmp.GetPixel($j,$k).B)}
+              }
+              $number=$script:i++
+              $bmp.Save((Join-Path $script:frames ('{0:D5}.png' -f $number)),[Drawing.Imaging.ImageFormat]::Png)
+              [IO.File]::AppendAllText($script:stats,("$number,$t,$tag,$blue,$([int]$pressed),$([int]$active),$($p.X-$left),$($p.Y-$top)`r`n"))
+            } finally { $g.Dispose();$bmp.Dispose() }
+            if($tag -eq 'escape' -and $active -and $pressed -and !$script:sent) {
+              if(!$script:pressAt){$script:pressAt=$t}
+              if($t-$script:pressAt -ge 950){
+                $script:sent=$true;Log-Input 'esc-injected' 0 0
+                [FrameQa]::keybd_event(27,0,0,[UIntPtr]::Zero)
+                Start-Sleep -Milliseconds 90
+                [FrameQa]::keybd_event(27,0,2,[UIntPtr]::Zero)
+              }
+            }
+          }
+          $a.KeyPreview=$true
+          $a.Add_KeyDown({param($s,$e) if($e.KeyCode -eq [Windows.Forms.Keys]::Escape){Log-Input 'esc-window' 0 0}})
+          $a.Add_Shown({
+            [void][FrameQa]::ClientToScreen($a.Handle,[ref]$script:origin)
+            $a.Activate()
+            $script:timer=New-Object Windows.Forms.Timer
+            $timer.Interval=23
+            $timer.Add_Tick({try {Sample-Frame} catch {[IO.File]::WriteAllText((Join-Path $Lab 'sampler-error.txt'),($_|Out-String));$script:timer.Stop()}})
+            $timer.Start()
+            [IO.File]::WriteAllText((Join-Path $Lab 'ready'),'ready')
+          })
+          [Windows.Forms.Application]::Run($a)
+          '@ | Set-Content -Encoding UTF8 -LiteralPath $fixture
+          $runner=Join-Path $lab 'run.mjs'
+          @'
+          import { registerHooks } from 'node:module';
+          import {writeFileSync,readFileSync,existsSync} from 'node:fs';
+          import {join} from 'node:path';
+          const root=process.env.GITHUB_WORKSPACE, lab=process.env.WFR_LAB;
+          const path=(name)=>join(lab,name);
+          const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+          const phase=name=>{writeFileSync(path('phase.txt'),name);console.log(name,Date.now());};
+          const stub=new URL('file:///'+join(root,'dsh-computer-use/tools/dsh-tools-stub.mjs').replaceAll('\\','/')).href;
+          registerHooks({resolve(spec,context,next){return spec==='@deepseek-ai/dsh-tools'?{url:stub,shortCircuit:true}:next(spec,context);}});
+          const {pathToFileURL}=await import('node:url');
+          const {apply}=await import(pathToFileURL(join(root,'dsh-computer-use/index.js')).href);
+          const reg=[];const effects=[];const ctx={get:n=>n==='tools'?{register: t=>{reg.push(t);return ()=>{};}}:undefined,effect:f=>{effects.push(f);return ()=>{};},inject:(n,f)=>{if(n.includes('tools'))f(ctx);return ()=>{};}};
+          apply(ctx,{});for(const f of effects)await f();
+          const window='DSH QA Timing A';
+          const call=(name,args)=>reg.find(t=>t.name==='computer_'+name).execute({window,...args});
+          const output=[];
+          const steps=[
+           ['click','click',{x:95,y:90,intent:'fixture click'}],
+           ['drag','drag',{x:120,y:160,x2:250,y2:215,steps:180,intent:'normal drag'}],
+           ['escape','drag',{x:120,y:160,x2:250,y2:215,steps:200,intent:'cancel drag'}]
+          ];
+          phase('baseline');await sleep(1100);
+          for(const [label,name,args] of steps){
+           phase(label);const start=Date.now();const result=await call(name,args);
+           output.push({label,start,end:Date.now(),...result});
+           phase(label+'-done');
+           await sleep(1600);
+          }
+          phase('complete');writeFileSync(path('actions.json'),JSON.stringify(output,null,2));
+          if(!output[0]?.ok||!output[1]?.ok||output[2]?.ok||!/STOPPED/.test(output[2]?.text||''))process.exitCode=1;
+          '@ | Set-Content -Encoding UTF8 -LiteralPath $runner
+          $fixtureProcess=Start-Process powershell.exe -ArgumentList @('-NoProfile','-STA','-WindowStyle','Hidden','-File',('"' + $fixture + '"'),('"' + $lab + '"')) -PassThru
+          try {
+            $until=(Get-Date).AddSeconds(15)
+            while (!(Test-Path (Join-Path $lab 'ready')) -and !$fixtureProcess.HasExited -and (Get-Date) -lt $until) { Start-Sleep -Milliseconds 150 }
+            if (!(Test-Path (Join-Path $lab 'ready'))) { throw 'Fixture did not start' }
+            node $runner
+            if (Test-Path (Join-Path $lab 'sampler-error.txt')) {
+              Get-Content (Join-Path $lab 'sampler-error.txt')
+              throw 'Sampler failed'
+            }
+            if ($LASTEXITCODE -ne 0) { Get-Content (Join-Path $lab 'actions.json'); throw 'Tool flow failed' }
+          } finally {
+            if(!$fixtureProcess.HasExited){Stop-Process -Id $fixtureProcess.Id}
+            $overlayPidPath=Join-Path $sandboxTmp 'dsh-cua-overlay.pid'
+            if(Test-Path $overlayPidPath){
+              $overlayPid=0
+              if([int]::TryParse((Get-Content -Raw $overlayPidPath).Trim(),[ref]$overlayPid)) {
+                Stop-Process -Id $overlayPid -ErrorAction SilentlyContinue
+              }
+            }
+          }
+      - name: Upload bounded synthetic fixture evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-cua-frame-timing
+          path: |
+            ${{ runner.temp }}/window-frame-proof/frames/*.png
+            ${{ runner.temp }}/window-frame-proof/input.csv
+            ${{ runner.temp }}/window-frame-proof/samples.csv
+            ${{ runner.temp }}/window-frame-proof/actions.json
+          retention-days: 14
