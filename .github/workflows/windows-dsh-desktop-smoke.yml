@@ -1,0 +1,125 @@
+name: Windows DSH Desktop package smoke (QA branch only)
+on:
+  push:
+    branches: ['qa/plugin-reliability-2026-11-26']
+    paths: ['.github/workflows/windows-dsh-desktop-smoke.yml']
+permissions: {}
+jobs:
+  desktop-packaged:
+    if: github.repository == 'Triton556/dsh-plugins'
+    runs-on: windows-2025
+    timeout-minutes: 12
+    steps:
+      - name: Check out exact public QA commit
+        shell: pwsh
+        run: |
+          git init .
+          if ($LASTEXITCODE -ne 0) { throw 'git init failed' }
+          git fetch --depth 1 https://github.com/Triton556/dsh-plugins.git $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { throw 'git fetch failed' }
+          git checkout --detach FETCH_HEAD
+          if ($LASTEXITCODE -ne 0 -or (git rev-parse HEAD) -ne $env:GITHUB_SHA) { throw 'wrong checkout' }
+      - name: Verify vendor signature and exercise the packaged desktop profile
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not [Environment]::UserInteractive -or (Get-Process -Id $PID).SessionId -eq 0) { throw 'No interactive runner session' }
+          $lab = (New-Item -ItemType Directory (Join-Path $env:RUNNER_TEMP 'dsh-packaged')).FullName
+          $env:DSH_HOME = Join-Path $lab 'home'
+          $env:DSH_DESKTOP_USER_DATA_DIR = Join-Path $lab 'electron'
+          $env:DSH_TELEMETRY_DISABLED = '1'
+          $env:DSH_TELEMETRY_MODE = 'DISABLED'
+          $env:DO_NOT_TRACK = '1'
+          Remove-Item Env:DEEPSEEK_API_KEY -ErrorAction SilentlyContinue
+          $installer = Join-Path $lab 'dsh-setup.exe'
+          $target = Join-Path $lab 'app'
+          $official = 'https://download.deepseek.com/desktop/dsh-latest-windows-x64.exe'
+          Invoke-WebRequest -Uri $official -MaximumRedirection 0 -OutFile $installer -TimeoutSec 120
+          $signature = Get-AuthenticodeSignature -FilePath $installer
+          $hash = (Get-FileHash -Algorithm SHA256 $installer).Hash
+          Write-Host "Installer SHA-256=$hash; signature=$($signature.Status); subject=$($signature.SignerCertificate.Subject)"
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '(?i)(?:^|,\s*)(?:O|CN)=[^,]*DeepSeek') {
+            throw 'Did not execute: official installer signature or publisher did not match'
+          }
+          if ($target -match '\s') { throw 'The NSIS test install path must have no whitespace' }
+          $setup = Start-Process -FilePath $installer -ArgumentList @('/S',"/D=$target") -PassThru
+          if (!$setup.WaitForExit(180000)) { throw 'Vendor installer did not finish in three minutes' }
+          if ($setup.ExitCode -ne 0) { throw "Vendor installer exited $($setup.ExitCode)" }
+          $cli = Join-Path $target 'resources\runtime\cli\bin\dsh.cmd'
+          if (!(Test-Path $cli)) { throw 'Installer returned success but packaged dsh.cmd was not found at the requested path' }
+          $main = @(Get-ChildItem -LiteralPath $target -File -Filter '*.exe' | Where-Object { $_.Name -notmatch '(?i)uninstall|setup|crash' })
+          if ($main.Count -ne 1) { throw "Expected exactly one installed Desktop executable, found $($main.Count)" }
+          $exe = $main[0].FullName
+          $appSig = Get-AuthenticodeSignature -FilePath $exe
+          if ($appSig.Status -ne 'Valid' -or $appSig.SignerCertificate.Subject -notmatch '(?i)(?:^|,\s*)(?:O|CN)=[^,]*DeepSeek') { throw 'Did not launch: installed Desktop publisher did not match' }
+          Write-Host "Verified installed Desktop product version $($main[0].VersionInfo.ProductVersion)"
+          $manifest = Join-Path $env:DSH_HOME 'profiles\desktop\package.json'
+          Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+          function Wait-For([scriptblock]$check, [string]$failure, [int]$seconds = 45) {
+            $end = (Get-Date).AddSeconds($seconds)
+            do {
+              $result = & $check
+              if ($result) { return $result }
+              Start-Sleep -Milliseconds 500
+            } while ((Get-Date) -lt $end)
+            throw $failure
+          }
+          function Get-DesktopProcesses {
+            @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe })
+          }
+          function Launch-Desktop([string]$label) {
+            $app = Start-Process -FilePath $exe -ArgumentList @('--lang=en-US','--disable-background-networking','--no-first-run') -WorkingDirectory $lab -PassThru
+            $visible = Wait-For {
+              Get-DesktopProcesses | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+            } "No visible Desktop window during $label"
+            $uia = [Windows.Automation.AutomationElement]::FromHandle($visible.MainWindowHandle)
+            if (!$uia) { throw "No UI Automation root during $label" }
+            $root = $uia.FindFirst([Windows.Automation.TreeScope]::Descendants,
+              (New-Object Windows.Automation.PropertyCondition([Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Document)))
+            Write-Host "PASS: $label visible app window from installed executable; renderer accessibility document=$([bool]$root)"
+            return $visible
+          }
+          function Stop-TestDesktop {
+            $live = @(Get-DesktopProcesses)
+            foreach ($p in $live) {
+              if ($p.MainWindowHandle -ne 0) { [void]$p.CloseMainWindow() }
+            }
+            Start-Sleep -Seconds 3
+            foreach ($p in @(Get-DesktopProcesses)) { Stop-Process -Id $p.Id -ErrorAction SilentlyContinue }
+            [void](Wait-For { @(Get-DesktopProcesses).Count -eq 0 } 'Desktop cannot exit' 15)
+          }
+          try {
+            [void](Launch-Desktop 'first launch')
+            [void](Wait-For { Test-Path -LiteralPath $manifest } 'Desktop did not initialize the isolated profile')
+            Stop-TestDesktop
+            $packs = Join-Path $lab 'packs'
+            New-Item -ItemType Directory $packs | Out-Null
+            $spec = [ordered]@{
+              'dsh-computer-use' = 'dsh-computer-use'
+              'dsh-browser-bridge' = 'dsh-browser-bridge/plugin'
+              'dsh-artifact-panes' = 'artifact-panes'
+            }
+            $archives = @()
+            foreach ($p in $spec.Values) {
+              $result = npm pack (".\" + $p) --ignore-scripts --pack-destination $packs --json
+              if ($LASTEXITCODE -ne 0) { throw "QA tarball pack failed: $p" }
+              $item = ($result | Out-String | ConvertFrom-Json) | Select-Object -First 1
+              $archives += (Join-Path $packs $item.filename)
+            }
+            & $cli plugin --profile desktop add @archives
+            if ($LASTEXITCODE -ne 0) { throw 'Packaged dsh.cmd plugin add failed' }
+            $profile = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json
+            foreach ($archive in $archives) {
+              $stem = [IO.Path]::GetFileName($archive) -replace '-\d+\.\d+\.\d+.*\.tgz$', ''
+              if (!$profile.dependencies.PSObject.Properties[$stem] -or $profile.dsh.profile.bundles -notcontains $stem) {
+                throw "Package not installed and enabled in the desktop graph: $stem"
+              }
+              Write-Host "PASS: exact QA bundle present in packaged profile: $stem ($((Get-FileHash -Algorithm SHA256 $archive).Hash))"
+            }
+            $window = Launch-Desktop 'second launch, three QA bundles'
+            $uia = [Windows.Automation.AutomationElement]::FromHandle($window.MainWindowHandle)
+            $elements = $uia.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
+            $markers = @($elements | ForEach-Object { $_.Current.Name } | Where-Object { $_ -match '^(DeepSeek Harness|Sign in|Log in|Create a session|New session|Settings|Plugins|Artifacts|Workspace files|Start a conversation|登录|新建会话|设置|插件)$' } | Sort-Object -Unique)
+            Write-Host "Safe shell markers: $($markers -join ', ')"
+            Write-Host 'Scope: installation, packaged profile registration and visible shell only, not tool invocation or Artifact Panes acceptance.'
+          } finally { Stop-TestDesktop }
