@@ -141,8 +141,29 @@ jobs:
               ([Windows.Automation.InvokePattern]$invoke).Invoke()
               Write-Host "Invoked built-in Desktop control: $label"
             }
+            # The test profile is blank and no authorization is requested. Emit
+            # only built-in onboarding labels, not document text or credentials.
+            $allowedWords = '(?i)api|key|sign in|log ?in|skip|later|setup|set up|continue|密码|密钥|登录|跳过|稍后|继续'
+            $probeEnd = (Get-Date).AddSeconds(12)
+            $labels = @()
+            do {
+              $labels = @(Get-DesktopProcesses | Where-Object { $_.MainWindowHandle -ne 0 } | ForEach-Object {
+                $root = [Windows.Automation.AutomationElement]::FromHandle($_.MainWindowHandle)
+                $root.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |
+                  ForEach-Object {
+                    $name = $_.Current.Name
+                    if ($name -match $allowedWords -and $name.Length -le 70 -and
+                        $_.Current.ControlType -in @([Windows.Automation.ControlType]::Button, [Windows.Automation.ControlType]::Hyperlink)) {
+                      $name
+                    }
+                  }
+              } | Sort-Object -Unique)
+              if ($labels.Count -ge 2) { break }
+              Start-Sleep -Milliseconds 500
+            } while ((Get-Date) -lt $probeEnd)
+            Write-Host "Observed built-in welcome buttons/links: $($labels -join ' | ')"
             $keyOption = Wait-For {
-              Find-VisibleDesktopControl '^(?:Use|Enter|Set up|Sign in with|Continue with)(?: an?| your| a DeepSeek)? API Key$'
+              Find-VisibleDesktopControl '^(?:API Key|(?:Use|Enter|Set up|Sign in with|Continue with)(?: an?| your| a DeepSeek)? API Key(?: instead)?|使用\s*API\s*密钥(?:登录)?|API\s*密钥登录)$'
             } 'Official Desktop did not expose the documented API key option' 35
             Invoke-DesktopControl $keyOption
             $later = Wait-For {
