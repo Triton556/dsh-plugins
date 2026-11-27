@@ -97,6 +97,9 @@ if (-not ('Cua.Native' -as [type])) {
 public const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
 [DllImport("user32.dll")] public static extern bool ClientToScreen(System.IntPtr hWnd, ref POINT p);
 [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+[DllImport("user32.dll")] public static extern uint GetDpiForWindow(System.IntPtr hWnd);
+[DllImport("user32.dll")] public static extern System.IntPtr GetWindowDpiAwarenessContext(System.IntPtr hWnd);
+[DllImport("user32.dll")] public static extern int GetAwarenessFromDpiAwarenessContext(System.IntPtr context);
 [DllImport("user32.dll")] public static extern bool PrintWindow(System.IntPtr hWnd, System.IntPtr hdc, uint flags);
 [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, System.IntPtr param);
 [DllImport("user32.dll")] public static extern bool IsWindowVisible(System.IntPtr hWnd);
@@ -112,6 +115,32 @@ public const uint LBUTTONDOWN = 0x0002, LBUTTONUP = 0x0004, RBUTTONDOWN = 0x0008
 }
 
 [void][Cua.Native]::SetProcessDPIAware()
+
+# Report the target HWND's effective DPI, not a user-scope scale estimate.
+# This is the actual monitor DPI only when the target is per-monitor aware.
+function Get-TargetDpi([System.IntPtr]$h) {
+  $dpi = $null
+  $awareness = 'unknown'
+  try {
+    $value = [Cua.Native]::GetDpiForWindow($h)
+    if ($value -gt 0) { $dpi = $value }
+  } catch [System.Management.Automation.MethodInvocationException] {
+    if ($_.Exception.InnerException -isnot [System.EntryPointNotFoundException]) { throw }
+  }
+  try {
+    $context = [Cua.Native]::GetWindowDpiAwarenessContext($h)
+    if ($context -ne [System.IntPtr]::Zero) {
+      switch ([Cua.Native]::GetAwarenessFromDpiAwarenessContext($context)) {
+        0 { $awareness = 'unaware' }
+        1 { $awareness = 'system-aware' }
+        2 { $awareness = 'per-monitor-aware' }
+      }
+    }
+  } catch [System.Management.Automation.MethodInvocationException] {
+    if ($_.Exception.InnerException -isnot [System.EntryPointNotFoundException]) { throw }
+  }
+  [pscustomobject]@{ Dpi = $dpi; Awareness = $awareness }
+}
 
 function Get-WindowHandle([string]$name) {
   if (-not $name) { return [System.IntPtr]::Zero }
@@ -635,9 +664,10 @@ switch ($Action) {
     "overlay: " + $(if ($running) { 'already running' } else { 'started' })
   }
   'info' {
+    if ($h -eq [System.IntPtr]::Zero) { throw '-Window or -ProcessId is required' }
     $exStyle = [Cua.Native]::GetWindowLong($h, -20)
     $isTopmost = (($exStyle -band 0x8) -ne 0)
-    if ($h -eq [System.IntPtr]::Zero) { throw '-Window or -ProcessId is required' }
+    $targetDpi = Get-TargetDpi $h
     $r = New-Object Cua.Native+RECT; [void][Cua.Native]::GetWindowRect($h, [ref]$r)
     $c = New-Object Cua.Native+RECT; [void][Cua.Native]::GetClientRect($h, [ref]$c)
     $fg = [Cua.Native]::GetForegroundWindow()
@@ -646,7 +676,8 @@ switch ($Action) {
       window = "$($r.Left),$($r.Top) $($r.Right - $r.Left)x$($r.Bottom - $r.Top)"
       client = "$($c.Right)x$($c.Bottom)"
       monitor = ([System.Windows.Forms.Screen]::FromHandle($h)).Bounds.ToString()
-      dpi = (Get-ItemProperty 'HKCU:\Control Panel\Desktop\WindowMetrics' -ErrorAction SilentlyContinue).AppliedDPI
+      dpi = $targetDpi.Dpi
+      dpiAwareness = $targetDpi.Awareness
     } | Format-List | Out-String -Width 200
   }
   'activate' {
