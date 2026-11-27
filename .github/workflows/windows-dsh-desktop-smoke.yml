@@ -134,11 +134,12 @@ jobs:
             }
             function Invoke-DesktopControl($control) {
               $invoke = $null
-              if (!$control.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$invoke)) {
-                throw "Expected an actionable onboarding control: $($control.Current.Name)"
-              }
               $label = $control.Current.Name
-              ([Windows.Automation.InvokePattern]$invoke).Invoke()
+              if ($control.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$invoke)) {
+                ([Windows.Automation.InvokePattern]$invoke).Invoke()
+              } elseif ($control.TryGetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern, [ref]$invoke)) {
+                ([Windows.Automation.SelectionItemPattern]$invoke).Select()
+              } else { throw "Expected an actionable Desktop control: $label" }
               Write-Host "Invoked built-in Desktop control: $label"
             }
             # The test profile is blank and no authorization is requested. Emit
@@ -174,13 +175,15 @@ jobs:
               Find-VisibleDesktopControl '^(?:New chat|New session|Create a session|Workspace files|Start a conversation|New conversation|Plugins|Artifacts|新建会话)$'
             } 'Set up later did not expose a workspace marker on the signed build' 45
             Write-Host "PASS: reached the signed Desktop workspace without credentials: $($workspace.Current.Name)"
-            $maybePlugin = Find-VisibleDesktopControl '^Plugins$'
-            if ($maybePlugin) {
-              Invoke-DesktopControl $maybePlugin
-              $listed = Wait-For {
-                Find-VisibleDesktopControl '^(?:dsh-artifact-panes|dsh-browser-bridge|dsh-computer-use|Artifact Panes|Computer Use|DSH Browser Bridge)$'
-              } 'Desktop Plugins is visible but QA bundle names were not found' 15
-              Write-Host "PASS: at least one installed QA bundle is visible in the application UI: $($listed.Current.Name)"
+            $plugins = Wait-For { Find-VisibleDesktopControl '^Plugins$' } 'Workspace did not expose the Plugins button' 15
+            Invoke-DesktopControl $plugins
+            $installed = Wait-For {
+              Find-VisibleDesktopControl '^Installed(?: \(\d+\))?$'
+            } 'Plugins did not expose the Installed tab' 15
+            Invoke-DesktopControl $installed
+            foreach ($pattern in @('(?:dsh-artifact-panes|Artifact Panes)', '(?:dsh-browser-bridge|Browser Bridge)', '(?:dsh-computer-use|Computer Use)')) {
+              $listed = Wait-For { Find-VisibleDesktopControl $pattern } "Installed UI did not expose $pattern" 20
+              Write-Host "PASS: installed QA bundle visible in the real application: $($listed.Current.Name)"
             }
             Write-Host 'Scope: signed Desktop workspace entry and packaged profile only; no model call, Artifact Panes capture or installed DSH tool dispatch was asserted.'
           } finally { Stop-TestDesktop }
