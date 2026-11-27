@@ -46,6 +46,12 @@ A quick refusal with a manual recovery is intentional when Chrome cannot render 
 
 [Desktop UI follow-up](https://github.com/Triton556/dsh-plugins/actions/runs/45955074767/job/140359553387): reached **New session** through **Add API Key → Set up later**, then opened **Plugins** in the unmodified signed application. The default page has an **Installed plugins** section, not a separate **Installed** tab. After scrolling, the automated test independently confirmed all three visible cards below that section. [Native Windows screenshot](https://github.com/Triton556/dsh-plugins/actions/runs/45955074767/artifacts/15178292826) shows all three toggles on; the image was decoded and reviewed. A prior red run was a locator error (optional tab and an offscreen match), not a missing package. No credentials, experimental Discover bundle, model calls, tool dispatch or live Artifact Panes workflow were used.
 
+### Artifact Panes: annotation capture source
+
+[Signed Windows rerun](https://github.com/Triton556/dsh-plugins/actions/runs/45961562179/job/140380337872) confirmed the installed helper's bytes matched the QA script. The real app produced a 215 × 70 crop showing its Plugins heading; [both PNGs](https://github.com/Triton556/dsh-plugins/actions/runs/45961562179/artifacts/15180214225) are from the isolated Windows run. A separate Windows contract supplied a mocked unavailable capture and verified an explicit failure, exactly one attempt and no PNG. A known target produced the requested 20 × 18 crop. The helper never substitutes desktop pixels and does not restore a minimized window or guess among multiple candidates.
+
+The annotation-renderer regression verified that a failed capture keeps the note and displays **Annotation saved without a screenshot**. All 11 Artifact Panes Node suites passed locally. The isolated Windows run tested the installed native helper directly, not a complete annotation flow through the signed Desktop UI.
+
 ## Further UX work
 
 1. **Browser Bridge:** show connection health by layer, require snapshot generation with AX indices, and report whether expected postconditions were observed after input. An uncertain outcome must not cause the action to be replayed.
