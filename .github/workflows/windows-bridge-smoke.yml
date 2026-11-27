@@ -205,7 +205,7 @@ jobs:
           node smoke.mjs
           if ($LASTEXITCODE -ne 0) { throw 'Windows smoke failed' }
       - name: Exercise native Computer Use on two synthetic Windows forms
-        if: always()
+        if: ${{ !cancelled() }}
         shell: powershell
         run: |
           if (-not [Environment]::UserInteractive -or (Get-Process -Id $PID).SessionId -eq 0) { throw 'No interactive runner session for desktop smoke' }
@@ -264,6 +264,87 @@ jobs:
               }
             } finally { $bmp.Dispose() }
             Write-Host 'PASS: native 70x50 window-relative crop contains the expected fixture color'
+            $ErrorActionPreference = 'Stop'
+            $oldTemp = $env:TEMP
+            $env:TEMP = $lab
+            Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class QaWin {
+            [StructLayout(LayoutKind.Sequential)] public struct Point { public int X, Y; }
+            [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title);
+            [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+            [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref Point p);
+            [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int key);
+            [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+          }
+          '@
+            function Measure-FixtureEdge($x, $y) {
+              $frame = New-Object Drawing.Bitmap(12, 30)
+              $graphics = [Drawing.Graphics]::FromImage($frame)
+              try {
+                $graphics.CopyFromScreen($x, $y, 0, 0, $frame.Size)
+                $max = 0
+                for ($col=0; $col -lt 12; $col++) {
+                  for ($row=0; $row -lt 30; $row++) {
+                    $max = [Math]::Max($max, [int]$frame.GetPixel($col, $row).B)
+                  }
+                }
+                return $max
+              } finally { $graphics.Dispose(); $frame.Dispose() }
+            }
+            $visible = [QaWin]::FindWindow($null, $a)
+            if ($visible -eq [IntPtr]::Zero -or [QaWin]::GetForegroundWindow() -ne $visible) { throw 'fixture not foreground for overlay check' }
+            $origin = New-Object QaWin+Point
+            if (![QaWin]::ClientToScreen($visible, [ref]$origin)) { throw 'cannot read fixture origin' }
+            $edgeX = $origin.X + 1
+            $edgeY = $origin.Y + 125
+            $baseline = Measure-FixtureEdge $edgeX $edgeY
+            if ($baseline -gt 20) { throw "unexpected baseline pixel blue=$baseline" }
+            $overlayScript = Join-Path (Split-Path $engine) 'overlay.ps1'
+            $overlayProcess = Start-Process -FilePath powershell.exe -ArgumentList @('-NoProfile','-STA','-WindowStyle','Hidden','-File',('"' + $overlayScript + '"')) -PassThru
+            try {
+              $actionToken = [Guid]::NewGuid().ToString()
+              $state = [ordered]@{
+                updated = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); ttlMs = 30000
+                stopToken = $actionToken; screen = $false; mode = 'window'
+                target = @{ hwnd = $visible.ToInt64(); rect = @($origin.X, $origin.Y, ($origin.X + 300), ($origin.Y + 210)) }
+                cursor = @{ x = ($origin.X + 205); y = ($origin.Y + 125) }; label = 'QA fixture drag'
+              }
+              [IO.File]::WriteAllText((Join-Path $lab 'dsh-cua-overlay-state.json'), ($state | ConvertTo-Json -Depth 6 -Compress))
+              $until = (Get-Date).AddSeconds(8)
+              $blue = 0
+              while ((Get-Date) -lt $until) {
+                $blue = Measure-FixtureEdge $edgeX $edgeY
+                if ($blue -ge ($baseline + 30)) { break }
+                Start-Sleep -Milliseconds 150
+              }
+              if ($blue -lt ($baseline + 30)) { throw "WPF frame not detected at target edge; baseline=$baseline blue=$blue" }
+              if ([QaWin]::GetForegroundWindow() -ne $visible) { throw 'overlay stole window focus' }
+              Write-Host "PASS: visible blue WPF frame on fixture edge, non-activating; blue=$baseline to $blue"
+              $drag = Start-Process -FilePath powershell.exe -ArgumentList @('-NoProfile','-WindowStyle','Hidden','-File',('"' + $engine + '"'),'-Action','drag','-Window',('"' + $a + '"'),'-Client','-X','205','-Y','125','-X2','260','-Y2','177','-Steps','25','-Delay','120','-StopToken',$actionToken) -RedirectStandardOutput (Join-Path $lab 'drag-out.txt') -RedirectStandardError (Join-Path $lab 'drag-err.txt') -PassThru
+              $until = (Get-Date).AddSeconds(10)
+              while (([QaWin]::GetAsyncKeyState(1) -band 0x8000) -eq 0 -and !$drag.HasExited -and (Get-Date) -lt $until) { Start-Sleep -Milliseconds 25 }
+              if (([QaWin]::GetAsyncKeyState(1) -band 0x8000) -eq 0) { throw 'drag did not physically press its button' }
+              if ([QaWin]::GetForegroundWindow() -ne $visible) { throw 'refusing to send Escape outside fixture' }
+              [QaWin]::keybd_event(27, 0, 0, [UIntPtr]::Zero)
+              try { Start-Sleep -Milliseconds 150 } finally { [QaWin]::keybd_event(27, 0, 2, [UIntPtr]::Zero) }
+              if (!$drag.WaitForExit(8000)) { throw 'worker did not exit after Escape' }
+              if (!(Test-Path (Join-Path $lab "dsh-cua-stop-$actionToken.signal"))) { throw 'WPF daemon did not write the action cancellation signal' }
+              if ((Get-Content -Raw -LiteralPath (Join-Path $lab 'drag-err.txt')) -notmatch 'STOPPED: user requested cancellation') { throw 'worker did not report cancellation' }
+              if (([QaWin]::GetAsyncKeyState(1) -band 0x8000) -ne 0) { throw 'mouse button is still down after Escape' }
+              $until = (Get-Date).AddSeconds(3)
+              while ((Measure-FixtureEdge $edgeX $edgeY) -ge ($baseline + 30) -and (Get-Date) -lt $until) { Start-Sleep -Milliseconds 100 }
+              if ((Measure-FixtureEdge $edgeX $edgeY) -ge ($baseline + 30)) { throw 'overlay did not disappear after Escape' }
+              Write-Host 'PASS: live Escape path during drag, button released, blue frame cleared'
+            } finally {
+              if ($drag -and !$drag.HasExited) {
+                [IO.File]::WriteAllText((Join-Path $lab "dsh-cua-stop-$actionToken.signal"), '')
+                [void]$drag.WaitForExit(4000)
+              }
+              if (!$overlayProcess.HasExited) { Stop-Process -Id $overlayProcess.Id }
+              $env:TEMP = $oldTemp
+            }
           } finally {
             if (!$process.HasExited) { Stop-Process -Id $process.Id }
           }
