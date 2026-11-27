@@ -1,11 +1,11 @@
-﻿{
+{
   "name": "dsh-browser-bridge",
   "version": "0.1.0",
   "description": "DSH tools over the local browser bridge (extension + native messaging, no debug port).",
   "type": "module",
   "main": "index.js",
   "exports": { ".": "./index.js" },
-  "files": ["index.js"],
+  "files": ["index.js", "bridge.mjs", "cordis.patch.yml"],
   "engines": { "node": ">=20" },
   "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
   "peerDependencies": { "@deepseek-ai/dsh-tools": ">=0.2.2-rc.1 <0.3.0" }

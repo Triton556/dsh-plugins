@@ -7,7 +7,7 @@
 
 - Страница **Artifacts** на стартовом экране сайдбара (рядом с Workspace files):
   дропдаун со списком файлов из `<workspace>/artifacts/` (рекурсивно) и канвас;
-  первый (самый свежий) артефакт открывается сам.
+  панель открывает список; артефакт загружается после выбора.
 - Тип вкладки `artifact` (`ctx.sidebarRightTabs.register`, band `extension`) для
   адресов `dsh-resource://file/session/...` с паттернами `*.html`, `*.htm`, `*.xhtml`.
 - HTML рендерится в `<iframe sandbox="allow-scripts allow-modals">` — без

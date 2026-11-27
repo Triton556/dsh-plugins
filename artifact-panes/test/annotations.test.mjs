@@ -58,7 +58,23 @@ const fakeFrame = {
   contentWindow: frameWin,
   getBoundingClientRect: () => ({ left: 1000, top: 120, width: 400, height: 800, right: 1400, bottom: 920 }),
 };
-const fakeChrome = { insertBefore: () => {}, firstChild: null };
+function makeStrip() {
+  return {
+    firstChild: null,
+    insertBefore(el) {
+      el.parentNode?.removeChild(el);
+      this.firstChild = el;
+      el.parentNode = this;
+    },
+    removeChild(el) {
+      if (this.firstChild === el) this.firstChild = null;
+      el.parentNode = null;
+    },
+  };
+}
+const fakeChrome = makeStrip();
+const secondChrome = makeStrip();
+let visibleSession = 'sess-1';
 const fakePanel = {
   getAttribute: (name) => (name === 'data-sidebar-right-session' ? 'sess-1' : null),
   setAttribute: () => {},
@@ -83,6 +99,12 @@ function fakeElement() {
   el.querySelector = () => el;
   return el;
 }
+const secondPanel = {
+  ...fakePanel,
+  getAttribute: (key) => key === 'data-sidebar-right-session' ? 'sess-2' : null,
+  querySelector: (selector) => String(selector).includes('data-dockkit-strip-chrome') ? secondChrome : null,
+  querySelectorAll: () => [],
+};
 const composerParent = fakeElement();
 globalThis.document = {
   hidden: false,
@@ -93,7 +115,7 @@ globalThis.document = {
   createElement: () => fakeElement(),
   addEventListener: () => {},
   removeEventListener: () => {},
-  querySelectorAll: (selector) => (String(selector).includes('data-sidebar-right-session') ? [fakePanel] : []),
+  querySelectorAll: (selector) => (String(selector).includes('data-sidebar-right-session') ? [visibleSession === 'sess-1' ? fakePanel : secondPanel] : []),
   querySelector: (selector) => (String(selector).includes('data-composer-seat') || String(selector).includes('_scroll')
     ? composerParent : null),
 };
@@ -201,6 +223,7 @@ const byText = (tree, text) => findNodes(tree, (n) => n.type === 'button' && (n.
 // ---- install both halves --------------------------------------------------
 let overlay;   // GlobalAnnotations (shell.overlay)
 let dock;      // AnnotationDock (conversation.input.dock)
+let transcript;
 module.apply({
   effect(fn) { return fn(); },
   locale: { register: () => () => {} },
@@ -210,6 +233,7 @@ module.apply({
     register: (options, comp) => {
       if (options.name === 'shell.overlay') overlay = comp;
       if (options.name === 'conversation.input.dock') dock = comp;
+      if (options.name === 'conversation.user.text.node') transcript = comp;
       return () => {};
     },
   },
@@ -297,3 +321,76 @@ assert.equal(block.items[0].tag, 'button');
 
 console.log('artifact-panes annotations: OK');
 console.log('  draft length:', draft.length, 'chars');
+
+// A programmatic chat switch can leave the draft open while the old strip
+// remains mounted. Saving must keep the note attributed to A without reading B.
+const captures = [];
+globalThis.fetch = async (url, options) => {
+  if (url !== '/artifact-panes/screenshot') return new Promise(() => {});
+  captures.push([visibleSession, JSON.parse(options.body).sessionId]);
+  return { json: async () => ({ ok: true, path: 'synthetic-' + visibleSession + '.png' }) };
+};
+function setVisibleSession(id) {
+  visibleSession = id;
+  for (const fn of listeners.resize) fn();
+  return render(overlay, { currentSessionId: id });
+}
+function openFixtureNote(note) {
+  for (const fn of listeners.message) fn({ data: { type: 'dsh-picked', payload }, source: frameWin });
+  let view = render(overlay, { currentSessionId: 'sess-1' });
+  findNodes(view, (n) => n.type === 'textarea')[0].props.onChange({ target: { value: note } });
+  return render(overlay, { currentSessionId: 'sess-1' });
+}
+const latest = () => JSON.parse(globalThis.localStorage.getItem('dsh-artifact-panes:annotations'));
+const settle = async () => { flushTimers(); for (let i = 0; i < 8; i++) await Promise.resolve(); };
+
+openFixtureNote('A note after switch');
+assert.ok(fakeChrome.firstChild);
+tree = setVisibleSession('sess-2');
+assert.equal(fakeChrome.firstChild, null, 'hidden A must not own the toolbar');
+assert.ok(secondChrome.firstChild, 'visible B must own the toolbar');
+byText(tree, 'Save')[0].props.onClick();
+await settle();
+assert.equal(latest()['sess-2'], undefined, 'B does not get the note');
+assert.equal(latest()['sess-1'].at(-1).note, 'A note after switch');
+assert.deepEqual(captures, [], 'must not capture B to annotate a target from A');
+
+setVisibleSession('sess-1');
+tree = openFixtureNote('A note before delayed switch');
+byText(tree, 'Save')[0].props.onClick();
+setVisibleSession('sess-2');
+await settle();
+assert.deepEqual(captures, [], 'must also recheck the chat after the delay');
+assert.equal(latest()['sess-1'].at(-1).note, 'A note before delayed switch');
+assert.equal(latest()['sess-1'].at(-1).screenshot, '');
+
+setVisibleSession('sess-1');
+tree = openFixtureNote('A note with screenshot');
+byText(tree, 'Save')[0].props.onClick();
+await settle();
+assert.deepEqual(captures, [['sess-1', 'sess-1']], 'the normal same-chat capture still runs');
+assert.equal(latest()['sess-1'].at(-1).screenshot, 'synthetic-sess-1.png');
+console.log('PASS: visible strip, origin session, delayed capture guard and same-chat capture');
+
+ 
+globalThis.fetch = async (url) => {
+  assert.equal(url, '/artifact-panes/screenshot');
+  return { ok: false, status: 500, json: async () => ({ ok: false, error: 'WINDOW_CAPTURE_UNAVAILABLE' }) };
+};
+tree = openFixtureNote('Keep the note when capture fails');
+byText(tree, 'Save')[0].props.onClick();
+await settle();
+tree = render(overlay, { currentSessionId: 'sess-1' });
+assert.equal(latest()['sess-1'].at(-1).note, 'Keep the note when capture fails');
+assert.equal(latest()['sess-1'].at(-1).screenshot, '');
+const toast = findNodes(tree, n => n.props?.className === 'dsh-ann-toast').at(-1);
+assert.ok(toast?.children.flat(Infinity).includes('Annotation saved without a screenshot'), 'show explicit feedback without discarding the note');
+console.log('PASS: failed window capture leaves the annotation and clearly reports missing image');
+
+// A sent legacy annotation has no session embedded in its JSON. The transcript
+// slot's owner-supplied session still scopes its thumbnail even when B is open.
+setVisibleSession('sess-2');
+const sent = transcript({ sessionId: 'sess-1', node: { data: { items: [{ screenshot: 'synthetic-sess-1.png' }] } } });
+const sentImg = findNodes(sent, n => n.type === 'img')[0];
+assert.equal(new URL(sentImg.props.src, 'http://localhost').searchParams.get('sessionId'), 'sess-1');
+console.log('PASS: legacy sent thumbnails use the transcript owner, not the active chat');

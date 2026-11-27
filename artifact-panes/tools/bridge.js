@@ -57,9 +57,7 @@ export class CommandBroker {
     const c = this.authenticate(auth);
     if (typeof instance !== 'string' || instance.length > 80 || !instance) fail('INVALID_INPUT', 'Invalid client instance');
     if (c.instance && c.instance !== instance && this.now() - c.seen < this.heartbeatMs) fail('CLIENT_OWNED', 'Another live client owns this session');
-    if (c.instance && c.instance !== instance) {
-      for (const q of this.commands.values()) if (q.clientId === c.id && q.state === 'started') this.finish(q, errorResult(new ToolError('UNKNOWN_EFFECT', 'Client changed after execution began', MUTATING.has(q.name) ? 'unknown' : 'none'), q.context, q.id));
-    }
+    if (c.instance && c.instance !== instance) this.detachCommands(c, 'Renderer connection expired');
     c.instance = instance; c.seen = this.now();
     return { version: VERSION, serverTime: this.now() };
   }
@@ -71,14 +69,23 @@ export class CommandBroker {
     const c = this.authenticate(auth);
     if (typeof instance !== 'string' || !instance) fail('INVALID_INPUT', 'Invalid client instance');
     if (c.instance !== instance) return { version: VERSION, detached: false };
-    for (const q of [...this.commands.values()]) {
-      if (q.clientId !== c.id || !['delivered','started'].includes(q.state)) continue;
-      if (q.state === 'delivered' && q.deferrable) { q.state = 'queued'; q.instance = null; this.log(q, 'requeued'); continue; }
-      const unknown = q.state === 'started' && MUTATING.has(q.name);
-      this.finish(q, errorResult(new ToolError(unknown ? 'UNKNOWN_EFFECT' : 'ABORTED', unknown ? 'Renderer detached after execution began; do not retry automatically' : 'Renderer detached before execution', unknown ? 'unknown' : 'none'), q.context, q.id));
-    }
+    this.detachCommands(c, 'Renderer detached');
     c.instance = null; c.seen = 0;
     return { version: VERSION, detached: true };
+  }
+  detachCommands(client, reason) {
+    for (const q of [...this.commands.values()]) {
+      if (q.clientId !== client.id || !['delivered','started'].includes(q.state)) continue;
+      if (this.now() >= q.deadline) { this.expire(q); continue; }
+      if (q.state === 'delivered' && q.deferrable) {
+        q.state = 'queued'; q.instance = null; this.log(q, 'requeued');
+        continue;
+      }
+      const unknown = q.state === 'started' && MUTATING.has(q.name);
+      this.finish(q, errorResult(new ToolError(unknown ? 'UNKNOWN_EFFECT' : 'ABORTED',
+        unknown ? reason + ' after execution began; do not retry automatically' : reason + ' before completion',
+        unknown ? 'unknown' : 'none'), q.context, q.id));
+    }
   }
   poll(auth, instance) {
     this.heartbeat(auth, instance); this.sweep();
@@ -136,6 +143,10 @@ export class CommandBroker {
     // The renderer went away after the call was accepted (the user switched to
     // another chat). Keep the intent queued and answer instead of failing.
     if (!this.closed && q.deferrable && q.state === 'queued' && q.waiting) {
+      // The live call is over. Like enqueue(), deferred work is swept against
+      // its current deadline, not against the original caller's timer.
+      clearTimeout(q.timer); clearTimeout(q.graceTimer);
+      q.timer = q.graceTimer = undefined;
       q.deadline = this.now() + LIMITS.deferred; q.waiting = false; q.deferred = true;
       if (q.signal) { q.signal.removeEventListener('abort', q.abort); q.signal = null; }
       q.abort = null; this.log(q, 'deferred'); q.resolve(this.queuedResult(q)); return;

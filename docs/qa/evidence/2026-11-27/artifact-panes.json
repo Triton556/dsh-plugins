@@ -1,0 +1,13 @@
+[
+  "artifact library opens A in a sandboxed HTML iframe",
+  "drag resized side panel 575 → 444 px; iframe counter remained 1",
+  "unchanged bytes do not reset the counter",
+  "changed bytes promptly reload revised artifact without an Apply step",
+  "annotate clicks a real iframe target and opens its note editor",
+  "Save adds a local pending annotation without submitting it",
+  "edit reopens the same card and updates one note in place",
+  "switching to B shows one active toolbar; A annotation not leaked",
+  "both chats persist one note with their own artifact path",
+  "returning to A restores its pending annotation and one toolbar; reselect A when needed",
+  "send combines composer text with one annotation and clears only A pending"
+]

@@ -3,7 +3,8 @@
 // Every tool answers { ok, text }; screenshots and clips also carry an inline
 // attachment so the chat can show the picture without a second tool call.
 import { appendFileSync, readFileSync, existsSync, writeFileSync, unlinkSync, statSync } from 'node:fs';
-import { spawn, execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { extname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -23,17 +24,24 @@ function mediaTypeOf(filePath) {
   return IMAGE_TYPES[String(extname(filePath)).toLowerCase()] || null;
 }
 
-function downscale(filePath, maxDimension) {
-  // A full-screen PNG can exceed the deployment's image limits, so shrink it
-  // with the ffmpeg that the recording path already depends on.
+function positiveLimit(value, fallback) {
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+function downscale(filePath, limits) {
+  // Fit both sides and the pixel budget. A bytes-only rejection may already be
+  // within both bounds; still reduce the raster rather than retrying it unchanged.
+  const pixels = positiveLimit(limits.maxImagePixels, 1600 ** 2);
+  const side = Math.min(positiveLimit(limits.maxImageDimension, 1600), 1600, pixels);
+  const ratio = `min(0.875,min(${side}/max(iw,ih),sqrt(${pixels}/(iw*ih))))`;
+  const target = join(tmpdir(), `dsh-cua-attachment-${randomUUID()}.png`);
   try {
-    // ESM entry: the imported binding, not require() (which does not exist here
-    // and made the oversized-image retry a silent no-op).
-    const target = filePath.replace(/\.(png|jpe?g|webp)$/i, '-small.$1');
-    execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-i', filePath,
-      '-vf', `scale='min(${maxDimension},iw)':-1`, target], { timeout: 20000, windowsHide: true });
+    execFileSync('ffmpeg', ['-n', '-loglevel', 'error', '-i', filePath,
+      '-vf', `scale='max(1,trunc(iw*${ratio}))':'max(1,trunc(ih*${ratio}))'`,
+      '-frames:v', '1', target], { timeout: 20000, windowsHide: true });
     return existsSync(target) ? target : null;
   } catch (error) {
+    try { unlinkSync(target); } catch {}
     return null;
   }
 }
@@ -54,10 +62,14 @@ async function attachImage(ctx, filePath) {
       const message = String(error && error.message || error);
       const tooBig = /TOO_LARGE|TOO_MANY_PIXELS|DIMENSION_TOO_LARGE|too large|exceeds/i.test(message);
       if (!tooBig || mediaType !== 'image/png') throw error;
-      const smaller = downscale(filePath, Math.min(Number(limits.maxImageDimension) || 1600, 1600));
+      const smaller = downscale(filePath, limits);
       if (!smaller) throw error;
-      const ref = await save(smaller);
-      return ref ? { ...ref } : null;
+      try {
+        const ref = await save(smaller);
+        return ref ? { ...ref } : null;
+      } finally {
+        try { unlinkSync(smaller); } catch {}
+      }
     }
   } catch (error) {
     console.warn('[dsh-computer-use] image attach failed:', String(error && error.message || error).slice(0, 200));
@@ -70,7 +82,11 @@ async function attachImage(ctx, filePath) {
 const OVERLAY_SCRIPT = new URL('./tools/overlay.ps1', import.meta.url);
 const OVERLAY_STATE = join(tmpdir(), 'dsh-cua-overlay-state.json');
 const OVERLAY_PID = join(tmpdir(), 'dsh-cua-overlay.pid');
+const OVERLAY_READY = join(tmpdir(), 'dsh-cua-overlay.ready');
+const OVERLAY_STARTUP_MS = 4500;
 const OVERLAY_TTL_MS = 90000;
+const OVERLAY_LINGER_MS = 700;
+const DOTNET_UNIX_EPOCH_TICKS = 621355968000000000n;
 const OVERLAY_MARKER = /^\[overlay\] hwnd=(\d+) rect=(-?\d+,-?\d+,-?\d+,-?\d+)(?: click=(-?\d+,-?\d+))?\s*$/m;
 
 const OVERLAY_BUILD = join(tmpdir(), 'dsh-cua-overlay.build');
@@ -81,19 +97,18 @@ function overlayAlive() {
     const pid = Number(readFileSync(OVERLAY_PID, 'utf8').trim());
     if (!Number.isFinite(pid) || pid <= 0) return false;
     process.kill(pid, 0);
+    if (Number(readFileSync(OVERLAY_READY, 'utf8').trim()) !== pid) return false;
     // A daemon started from older overlay.ps1 keeps its old behaviour (ESC
     // coverage, kill filter). Compare the stamped build with the script mtime
-    // and restart it instead of silently running stale code.
+    // and ask the launcher to verify its identity before replacing it.
     try {
-      const stamped = Number(readFileSync(OVERLAY_BUILD, 'utf8').trim());
-      const current = statSync(fileURLToPath(OVERLAY_SCRIPT)).mtimeMs * 10000;
-      if (!Number.isFinite(stamped) || Math.abs(stamped - current) > 50000) {
-        try { process.kill(pid); } catch (error) {}
-        try { unlinkSync(OVERLAY_PID); } catch (error) {}
-        return false;
-      }
+      const stamp = readFileSync(OVERLAY_BUILD, 'utf8').trim();
+      if (!/^\d+$/.test(stamp)) return false;
+      const stamped = Number((BigInt(stamp) - DOTNET_UNIX_EPOCH_TICKS) / 10000n);
+      const current = statSync(fileURLToPath(OVERLAY_SCRIPT)).mtimeMs;
+      if (Math.abs(stamped - current) > 5) return false;
     } catch (error) {
-      return true;
+      return false;
     }
     return true;
   } catch (error) {
@@ -101,41 +116,39 @@ function overlayAlive() {
   }
 }
 
-function refreshOverlay() {
-  if (!CUA_OVERLAY) return Promise.resolve();
-  // Renew the daemon's state (and its ESC listener) without changing what it
-  // shows: the last target and label stay, only the timestamp moves.
-  const last = lastOverlay;
-  if (last) pushOverlay(last.hwnd, last.rect, last.click, last.label, last.mode);
-  else pushOverlay(0, '', '', '', 'window');
-  return ensureOverlay();
-}
-
+let overlayStarting;
 function ensureOverlay() {
-  if (overlayAlive()) return Promise.resolve();
-  // A detached Node spawn yields a process that exits before it can create its
-  // window, so the PowerShell engine starts the daemon with Start-Process instead.
-  return (async () => {
+  if (overlayAlive()) return Promise.resolve(true);
+  overlayStarting ??= (async () => {
+    const deadline = Date.now() + OVERLAY_STARTUP_MS;
     try {
       const { engine } = await import('./tools/engine.mjs');
-      await engine({ action: 'overlay', Script: fileURLToPath(OVERLAY_SCRIPT) });
+      await engine({ action: 'overlay', Script: fileURLToPath(OVERLAY_SCRIPT) }, { timeoutMs: 2500 });
     } catch (error) {
       console.warn('[dsh-computer-use] overlay start failed:', String(error && error.message || error).slice(0, 160));
     }
-  })();
+    // Launcher exit means Start-Process returned, not that the WPF dispatcher
+    // can paint. Startup gets its own deadline, not the pointer's paint budget.
+    do {
+      if (overlayAlive()) return true;
+      await new Promise((resolve) => setTimeout(resolve, 45));
+    } while (Date.now() < deadline);
+    return false;
+  })().finally(() => { overlayStarting = undefined; });
+  return overlayStarting;
 }
 
 // Show the controlled window + action point; the indicator itself decides whether
 // it is visible (only while that window is in the foreground, or the desktop is).
-let lastOverlay = null;
-function pushOverlay(hwnd, rect, click, label, mode) {
+function pushOverlay(hwnd, rect, click, label, mode, ttlMs = OVERLAY_TTL_MS, stopToken) {
   try {
     const screenMode = mode === 'screen';
     const point = String(click || '').split(',').map(Number);
     const box = String(rect || '').split(',').map(Number);
     const state = {
       updated: Date.now(),
-      ttlMs: OVERLAY_TTL_MS,
+      ttlMs,
+      stopToken,
       // A whole-screen run has no window to watch: the banner must stay up while
       // the agent works, regardless of which app happens to be in front.
       screen: screenMode,
@@ -145,8 +158,6 @@ function pushOverlay(hwnd, rect, click, label, mode) {
       mode: screenMode ? 'screen' : 'window'
     };
     writeFileSync(OVERLAY_STATE, JSON.stringify(state), 'utf8');
-    lastOverlay = { hwnd, rect, click, label, mode };
-    ensureOverlay();
   } catch (error) {
     console.warn('[dsh-computer-use] overlay state failed:', String(error && error.message || error).slice(0, 160));
   }
@@ -237,8 +248,7 @@ function captionFor(name, args = {}) {
 }
 
 
-// ESC is edge-triggered, like Codex/Claude computer use: the overlay daemon kills
-// the in-flight engine process the moment ESC is pressed, then leaves this marker.
+// The overlay requests cooperative cancellation, then leaves this marker.
 // The next call consumes it once, reports STOPPED so the agent knows what happened,
 // and everything after that works normally - no timed lockout.
 const STOP_MARKER = join(tmpdir(), 'dsh-cua-stop.json');
@@ -254,19 +264,20 @@ function stopRequested() {
   }
 }
 
-function clearStop() {
-  try { if (existsSync(STOP_MARKER)) unlinkSync(STOP_MARKER); } catch (error) {}
-}
-
 // Screen-wide input (no window/pid) needs the user's go-ahead: the overlay banner
 // says so, and the tool refuses until the agent confirmed it with the user.
 const SCREEN_INPUT_TOOLS = new Set(['computer_click', 'computer_drag', 'computer_type', 'computer_key', 'computer_scroll']);
+const DESKTOP_MUTATIONS = new Set([...SCREEN_INPUT_TOOLS,
+  'computer_focus', 'computer_tab', 'computer_window', 'computer_launch', 'computer_ui_action']);
+// Agent steps serialize their own siblings, but there may be multiple sessions
+// in this host. Only the active writer owns the indicator and its Escape token.
+let activeInputToken;
 
 
 // ------------------------------------------------------------------ system prompt
 const CUA_PROMPT = [
   'Computer use: the computer_* tools drive the real desktop (windows, clicks, typing,',
-  'browser tabs, screenshots, recordings, OCR, Chrome DevTools).',
+  'browser tabs via UI Automation, screenshots, recordings and OCR).',
   '',
   'When to use them: anything that is only reachable through a GUI - an app with no CLI,',
   'a browser page that needs a login, a native dialog, a canvas or video frame that must be',
@@ -282,7 +293,7 @@ const CUA_PROMPT = [
   '  keyboard away from the user. Before the first such call, ask whether they are ready to',
   '  leave the machine alone, then pass user_ready: true. A banner "DeepSeek using your',
   '  computer" appears on screen meanwhile.',
-  '- If the user presses ESC, the in-flight action is cancelled immediately and the',
+  '- If the user presses ESC, the worker stops at its next safe cancellation point and the',
   '  next call reports STOPPED once. Ask the user how to continue - there is no',
   '  lockout, and user_ready is only needed again for whole-screen input.',
   '- Never fight the user for the cursor: if they take over, stop and ask.',
@@ -301,7 +312,7 @@ export const TOOLS = [
   },
   {
     name: 'computer_shot',
-    description: 'Screenshot a window or the screen. method "print" captures the window even when it is covered by other apps (Chromium/Electron supported); "screen" copies visible pixels. With width+height it returns a cropped region. The image is attached to the result, so it appears in the chat.',
+    description: 'Screenshot a window or the screen. method "print" captures the window even when it is covered by other apps (Chromium/Electron supported); "screen" copies visible pixels. For a crop, supply both positive width and height (x and y default to 0). The image is attached to the result, so it appears in the chat.',
     parameters: {
       window: { type: 'string', description: 'Window title or process name substring' },
       pid: { type: 'integer', description: 'Target this process id instead of a title' },
@@ -459,7 +470,7 @@ export const TOOLS = [
       interval: { type: 'integer', description: 'Delay between frames ms' },
       dir: { type: 'string', description: 'Output directory' }
     },
-    run: (a) => ({ action: 'record', window: a.window, processId: a.pid, frames: a.frames, interval: a.interval, path: a.dir })
+    run: (a) => ({ action: 'record', method: 'print', window: a.window, processId: a.pid, frames: a.frames, interval: a.interval, path: a.dir })
   },
   {
     name: 'computer_video',
@@ -469,10 +480,10 @@ export const TOOLS = [
       pid: { type: 'integer', description: 'Target this process id' },
       frames: { type: 'integer', description: 'Frame count, default 30' },
       interval: { type: 'integer', description: 'Delay between frames ms (sets fps)' },
-      path: { type: 'string', description: 'Output path (.mp4 or .gif)' },
+      path: { type: 'string', description: 'Optional output path; extension must match format (.mp4 or .gif)' },
       format: { type: 'string', enum: ['mp4', 'gif'], description: 'mp4 (default) or an animated gif' }
     },
-    run: (a) => ({ action: 'video', window: a.window, processId: a.pid, frames: a.frames, interval: a.interval, path: a.path, format: a.format || 'mp4' })
+    run: (a) => ({ action: 'video', method: 'print', window: a.window, processId: a.pid, frames: a.frames, interval: a.interval, path: a.path, format: a.format || 'mp4' })
   },
   {
     name: 'computer_ocr',
@@ -498,11 +509,11 @@ export const TOOLS = [
       window: { type: 'string' },
       pid: { type: 'integer', description: 'Target this process id' },
       name: { type: 'string', description: 'Element name substring' },
-      kind: { type: 'string', enum: ['invoke', 'toggle', 'select', 'expand', 'value'], description: 'Preferred pattern' },
+      kind: { type: 'string', enum: ['invoke', 'toggle', 'select', 'expand', 'value'], description: 'Exact pattern; defaults to invoke without falling back to another action' },
       value: { type: 'string', description: 'Value for kind=value' }
     },
-    run: (a) => ({ action: 'uiact', window: a.window, processId: a.pid, text: a.name,
-      value: a.kind === 'value' ? (a.value || '') : '' })
+    run: (a) => ({ action: 'uiact', window: a.window, processId: a.pid, text: a.name, kind: a.kind || 'invoke',
+      value: a.kind === 'value' ? (a.value ?? '') : undefined })
   },
 ];
 
@@ -572,17 +583,28 @@ export function apply(ctx, config = {}) {
               }
             },
             execute: async (args) => {
+              if (spec.name === 'computer_shot' &&
+                  [args.x, args.y, args.width, args.height].some(value => value !== undefined) &&
+                  (!Number.isInteger(args.width) || args.width <= 0 ||
+                   !Number.isInteger(args.height) || args.height <= 0)) {
+                return { ok: false, text: 'INVALID_REGION: provide both positive width and height for a crop. No screenshot taken.' };
+              }
               const { engine } = await import('./tools/engine.mjs');
 
               // Whole-screen input and a fresh ESC stop both require the user's consent.
               const screenWide = SCREEN_INPUT_TOOLS.has(spec.name) && !args.window && !args.pid;
               const consent = args.user_ready === true;
-              // The stop is consumed first and always reported: otherwise a call
-              // with user_ready silently swallowed the ESC the user pressed.
-              if (stopRequested()) {
+              const changesDesktop = DESKTOP_MUTATIONS.has(spec.name) ||
+                (spec.name === 'computer_clipboard' && typeof args.text === 'string' && args.text.length > 0);
+              if (changesDesktop && activeInputToken) {
+                return { ok: false, text: 'BUSY: a desktop action is already running. Wait for it to finish before issuing another input.' };
+              }
+              // A concurrent observer must not consume the active action’s
+              // stop notice. When idle, report it even with user_ready set.
+              if (!activeInputToken && stopRequested()) {
                 return {
                   ok: false,
-                  text: 'STOPPED: the user pressed ESC and the running action was cancelled. Check with the user before continuing (retry with user_ready: true only after they agree).'
+                  text: 'STOPPED: the user pressed ESC and cancellation was requested for the running action. Check with the user before continuing (retry with user_ready: true only after they agree).'
                 };
               }
               if (screenWide && !consent) {
@@ -591,61 +613,61 @@ export function apply(ctx, config = {}) {
                   text: 'REFUSED: this acts on the whole screen. Ask the user to confirm (the on-screen banner "DeepSeek using your computer" shows while you work) and retry with user_ready: true. For a single app, pass window or pid instead - that needs no confirmation.'
                 };
               }
-              if (consent) clearStop();
 
-              // Start the indicator BEFORE the action, not after it: on a cold
-              // start the banner and the ESC listener must exist while the input
-              // runs. The engine's geometry line only arrives at process close.
-              if (CUA_OVERLAY) {
-                if (screenWide) {
-                  const point = Number.isFinite(args.x) && Number.isFinite(args.y) ? `${args.x},${args.y}` : '';
-                  pushOverlay(0, '', point, captionFor(spec.name, args), 'screen');
-                  await ensureOverlay();
-                } else {
-                  // The daemon must be listening before the input starts, or ESC
-                  // cannot cancel the very first action of a session.
-                  await refreshOverlay();
-                }
-              }
-
+              // Do not carry a previous target or desktop banner into a new call.
+              const point = Number.isFinite(args.x) && Number.isFinite(args.y) ? `${args.x},${args.y}` : '';
+              const caption = captionFor(spec.name, args);
+              const stopToken = CUA_OVERLAY && changesDesktop ? randomUUID() : undefined;
+              const ownsOverlay = () => !!stopToken && activeInputToken === stopToken;
               const call = spec.run(args || {});
               const engineArgs = {};
               for (const [key, value] of Object.entries(call)) {
                 if (key === 'action') { engineArgs.Action = value; continue; }
-                // ui tree depth travels on the engine's -Delta parameter.
                 const name = key === 'depth' ? 'Delta' : key.charAt(0).toUpperCase() + key.slice(1);
                 engineArgs[name] = value;
               }
-              engineArgs.Overlay = true;
-              const result = await engine(engineArgs);
-              if (result && result.text) {
-                const parsed = stripOverlay(result.text);
-                const caption = captionFor(spec.name, args);
-                // The banner (mode 'screen') is only for input that takes over the
-                // whole screen. A window-targeted call glows on that window (mode
-                // 'window'); passive calls without a target (a full-screen shot,
-                // a window listing) show nothing - they do not control anything.
-                if (parsed.rect && CUA_OVERLAY) {
-                  pushOverlay(parsed.hwnd, parsed.rect, parsed.click, caption, 'window');
-                } else if (screenWide && CUA_OVERLAY) {
-                  const point = Number.isFinite(args.x) && Number.isFinite(args.y) ? `${args.x},${args.y}` : '';
-                  pushOverlay(0, '', point, caption, 'screen');
-                } else if (CUA_OVERLAY) {
-                  // A passive call without a target must also clear a previous
-                  // whole-screen state, otherwise the banner and ESC listener
-                  // stay alive for the 90 s TTL while nothing is being driven.
-                  pushOverlay(0, '', '', caption, 'window');
+              engineArgs.Overlay = !!stopToken;
+              engineArgs.StopToken = stopToken;
+              let result;
+              if (stopToken) activeInputToken = stopToken;
+              try {
+                if (ownsOverlay()) {
+                  pushOverlay(0, '', screenWide ? point : '', screenWide ? caption : '', screenWide ? 'screen' : 'window', OVERLAY_TTL_MS, stopToken);
+                  const ready = await ensureOverlay();
+                  if (!ready && (spec.name === 'computer_click' || spec.name === 'computer_drag')) {
+                    return { ok: false, text: 'OVERLAY_NOT_READY: the indicator did not start; no click or drag was sent.' };
+                  }
                 }
-                if (parsed.rect) result.text = parsed.text;
+                result = await engine(engineArgs, {
+                  onLine: (line) => {
+                    const geometry = stripOverlay(line);
+                    if (ownsOverlay() && geometry.rect) pushOverlay(geometry.hwnd, geometry.rect, geometry.click, caption, 'window', OVERLAY_TTL_MS, stopToken);
+                  },
+                });
+              } finally {
+                const parsed = stripOverlay(result?.text);
+                if (result && parsed.rect) result.text = parsed.text;
+                if (ownsOverlay()) {
+                  if (result?.ok && parsed.rect) {
+                    pushOverlay(parsed.hwnd, parsed.rect, parsed.click, caption, 'window', OVERLAY_LINGER_MS);
+                  } else {
+                    // Clear the warning even when the engine fails or was stopped.
+                    pushOverlay(0, '', '', '', 'window', 0);
+                  }
+                  for (const signal of ['stop', 'painted']) {
+                    try { unlinkSync(join(process.env.TEMP || tmpdir(), `dsh-cua-${signal}-${stopToken}.signal`)); } catch {}
+                  }
+                  activeInputToken = undefined;
+                }
               }
               try {
                 if (result && result.ok && (spec.name === 'computer_shot' || spec.name === 'computer_video')) {
                   const produced = spec.name === 'computer_shot'
                     ? String(result.text || '').trim()
-                    : ((String(result.text || '').match(/([A-Za-z]:[^\s()]+\.(?:mp4|gif))/i) || [])[1] || '');
+                    : ((String(result.text || '').match(/^video: (.+\.(?:mp4|gif)) \(\d+(?:[.,]\d+)? KB, \d+ frames @ \d+ fps, (?:mp4|gif)\)$/im) || [])[1] || '');
                   // An mp4 cannot be shown inline, so attach its poster frame; a gif
                   // (animated) is attached as-is, like a screenshot.
-                  const mediaPath = produced && produced.toLowerCase().endsWith('.mp4')
+                  const mediaPath = produced && /\.mp4$/i.test(produced)
                     ? produced.replace(/\.mp4$/i, '.png')
                     : produced;
                   const image = await attachImage(toolCtx, mediaPath);
@@ -662,7 +684,7 @@ export function apply(ctx, config = {}) {
           appendFileSync(`${tmpdir()}/dsh-computer-use.log`, `${new Date().toISOString()} pid=${process.pid} registered ${TOOLS.length} tools\n`);
         } catch (error) {}
         console.info(`[dsh-computer-use] registered ${TOOLS.length} tools`);
-        return () => {};
+        return () => { for (const dispose of disposers.splice(0).reverse()) { try { dispose(); } catch {} } };
       }).catch((error) => {
         console.warn('[dsh-computer-use] tool registration failed:', String(error && error.message || error).slice(0, 300));
       });

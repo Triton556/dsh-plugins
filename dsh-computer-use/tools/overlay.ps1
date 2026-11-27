@@ -1,4 +1,4 @@
-
+﻿
 # DeepSeek computer-use indicator (WPF).
 #
 # WPF gives real per-pixel alpha, so the sprite keeps its soft glow (no dithering,
@@ -6,7 +6,7 @@
 # hard line.
 #
 #   * full-screen transparent window, click-through, never takes focus;
-#   * four edge gradients: opaque at the screen border, transparent ~72 px inside;
+#   * four edge gradients: soft at the active window or display border, fading inward;
 #   * the cursor sprite, tinted and gently rocking while an action runs;
 #   * a small caption next to it naming what the agent is doing.
 #
@@ -18,8 +18,8 @@ param(
   [string]$StatePath = (Join-Path $env:TEMP 'dsh-cua-overlay-state.json'),
   [string]$PidPath = (Join-Path $env:TEMP 'dsh-cua-overlay.pid'),
   [string]$LogPath = (Join-Path $env:TEMP 'dsh-cua-overlay.log'),
-  [int]$Depth = 72,
-  [double]$CursorSize = 40
+  [int]$Depth = 18,
+  [double]$CursorSize = 29
 )
 
 # boot marker: written before the heavy start-up work, so a silent death is visible
@@ -34,6 +34,9 @@ if (-not ('CuaWpf.Native' -as [type])) {
 [DllImport("user32.dll")] public static extern System.IntPtr GetForegroundWindow();
 [DllImport("user32.dll")] public static extern System.IntPtr GetAncestor(System.IntPtr hWnd, uint flags);
 [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int vKey);
+[StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+[DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(System.IntPtr hWnd, int attr, out RECT rect, int size);
+[DllImport("dwmapi.dll")] public static extern int DwmFlush();
 '@
 }
 
@@ -66,6 +69,8 @@ $window.WindowStyle = 'None'
 $window.AllowsTransparency = $true
 $window.Background = [System.Windows.Media.Brushes]::Transparent
 $window.ShowInTaskbar = $false
+$window.ShowActivated = $false
+$window.Focusable = $false
 $window.Topmost = $true
 $window.ResizeMode = 'NoResize'
 $window.IsHitTestVisible = $false
@@ -81,8 +86,8 @@ $window.Content = $canvas
 
 function New-EdgeGradient([string]$side) {
   $brush = New-Object System.Windows.Media.LinearGradientBrush
-  $deepseek = [System.Windows.Media.Color]::FromArgb(150, 77, 107, 254)
-  $clear = [System.Windows.Media.Color]::FromArgb(0, 77, 107, 254)
+  $deepseek = [System.Windows.Media.Color]::FromArgb(104, 106, 143, 255)
+  $clear = [System.Windows.Media.Color]::FromArgb(0, 106, 143, 255)
   switch ($side) {
     'top' { $brush.StartPoint = New-Object System.Windows.Point(0, 0); $brush.EndPoint = New-Object System.Windows.Point(0, 1) }
     'bottom' { $brush.StartPoint = New-Object System.Windows.Point(0, 1); $brush.EndPoint = New-Object System.Windows.Point(0, 0) }
@@ -94,20 +99,30 @@ function New-EdgeGradient([string]$side) {
   return $brush
 }
 
-$bands = @(
-  @{ side = 'top'; x = 0; y = 0; w = $width; h = $Depth },
-  @{ side = 'bottom'; x = 0; y = ($height - $Depth); w = $width; h = $Depth },
-  @{ side = 'left'; x = 0; y = 0; w = $Depth; h = $height },
-  @{ side = 'right'; x = ($width - $Depth); y = 0; w = $Depth; h = $height }
-)
-foreach ($band in $bands) {
+$edges = @{}
+foreach ($side in @('top', 'bottom', 'left', 'right')) {
   $rect = New-Object System.Windows.Shapes.Rectangle
-  $rect.Width = $band.w
-  $rect.Height = $band.h
-  $rect.Fill = New-EdgeGradient $band.side
-  [System.Windows.Controls.Canvas]::SetLeft($rect, $band.x)
-  [System.Windows.Controls.Canvas]::SetTop($rect, $band.y)
+  $rect.Fill = New-EdgeGradient $side
+  $rect.Visibility = 'Collapsed'
+  $edges[$side] = $rect
   [void]$canvas.Children.Add($rect)
+}
+
+function Set-Edges([double]$x, [double]$y, [double]$w, [double]$h) {
+  $d = [Math]::Min($Depth, [Math]::Min($w, $h) / 4)
+  $bands = @(
+    @{ side = 'top'; x = $x; y = $y; w = $w; h = $d },
+    @{ side = 'bottom'; x = $x; y = $y + $h - $d; w = $w; h = $d },
+    @{ side = 'left'; x = $x; y = $y; w = $d; h = $h },
+    @{ side = 'right'; x = $x + $w - $d; y = $y; w = $d; h = $h }
+  )
+  foreach ($band in $bands) {
+    $rect = $edges[$band.side]
+    $rect.Width = $band.w; $rect.Height = $band.h
+    [System.Windows.Controls.Canvas]::SetLeft($rect, $band.x)
+    [System.Windows.Controls.Canvas]::SetTop($rect, $band.y)
+    $rect.Visibility = 'Visible'
+  }
 }
 
 # cursor: sprite + rotation + caption
@@ -153,7 +168,7 @@ $banner.Background = New-Object System.Windows.Media.SolidColorBrush([System.Win
 $banner.CornerRadius = New-Object System.Windows.CornerRadius(10)
 $banner.Padding = New-Object System.Windows.Thickness(16, 10, 16, 10)
 $banner.BorderThickness = New-Object System.Windows.Thickness(1)
-$banner.BorderBrush = New-Object System.Windows.Media.SolidColorBrush([System.Windows.Media.Color]::FromArgb(150, 77, 107, 254))
+$banner.BorderBrush = New-Object System.Windows.Media.SolidColorBrush([System.Windows.Media.Color]::FromArgb(104, 106, 143, 255))
 $bannerStack = New-Object System.Windows.Controls.StackPanel
 $bannerTitle = New-Object System.Windows.Controls.TextBlock
 $bannerTitle.Text = 'DeepSeek using your computer'
@@ -175,12 +190,12 @@ $banner.Visibility = 'Collapsed'
 
 
 
+$window.Add_SourceInitialized({
+  $handle = (New-Object System.Windows.Interop.WindowInteropHelper($window)).Handle
+  $style = [CuaWpf.Native]::GetWindowLong($handle, -20)
+  [void][CuaWpf.Native]::SetWindowLong($handle, -20, ($style -bor 0x80000 -bor 0x20 -bor 0x80 -bor 0x08000000))
+})
 $window.Show()
-
-$handle = (New-Object System.Windows.Interop.WindowInteropHelper($window)).Handle
-$style = [CuaWpf.Native]::GetWindowLong($handle, -20)
-[void][CuaWpf.Native]::SetWindowLong($handle, -20, ($style -bor 0x80000 -bor 0x20 -bor 0x80 -bor 0x08000000))
-Note ('hwnd=' + $handle + ' ex=0x{0:X}' -f [CuaWpf.Native]::GetWindowLong($handle, -20))
 
 $script:snapshot = $null
 $script:curX = -1.0
@@ -188,10 +203,12 @@ $script:curY = -1.0
 $script:goalX = -1.0
 $script:goalY = -1.0
 $script:lastStamp = 0
-$script:lastSeen = 0
+$script:lastSeen = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 $script:rock = 0.0
 $script:lastEsc = 0
-$script:stoppedAt = 0
+$script:stoppedToken = ''
+$script:paintingToken = ''
+$script:paintedToken = ''
 $StopPath = Join-Path $env:TEMP 'dsh-cua-stop.json'
 
 function Read-Snapshot {
@@ -221,68 +238,109 @@ function ForegroundMatches($snapshot) {
 
 $timer = New-Object System.Windows.Threading.DispatcherTimer
 $timer.Interval = [TimeSpan]::FromMilliseconds(33)
+$script:daemonReady = $false
 $timer.Add_Tick({
+  if (!$script:daemonReady -and $window.IsVisible) {
+    try {
+      [IO.File]::WriteAllText((Join-Path $env:TEMP 'dsh-cua-overlay.ready'), [string]$PID)
+      $script:daemonReady = $true
+    } catch {}
+  }
   $snapshot = Read-Snapshot
   $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
   $ttl = 90000
-  if ($snapshot -and $snapshot.ttlMs) { $ttl = [int]$snapshot.ttlMs }
+  if ($snapshot -and $null -ne $snapshot.ttlMs) { $ttl = [int]$snapshot.ttlMs }
   $fresh = $false
-  if ($snapshot -and $snapshot.updated) { $fresh = ($now - [int64]$snapshot.updated) -le $ttl }
+  if ($snapshot -and $snapshot.updated -and $ttl -gt 0) {
+    $age = $now - [int64]$snapshot.updated
+    $fresh = $age -ge 0 -and $age -le $ttl
+  }
   $visible = $fresh -and (ForegroundMatches $snapshot)
   $screenMode = $snapshot -and $snapshot.mode -eq 'screen'
 
-  # ESC stops the takeover: kill the in-flight action, write a one-shot marker
-  # the plugin reads on the next call, and hide the overlay until it changes.
-  # Polled while the daemon holds a fresh state (the plugin starts it before
-  # every call), not only while the glow is visible: a window-scoped action whose
-  # window is behind must still be cancellable.
-  if ($visible -or $fresh) {
+  # Request cancellation only for the current call. Killing a worker could
+  # interrupt a drag between mouse-down and its finally block.
+  $token = [string]$snapshot.stopToken
+  if ($fresh -and $token -match '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$') {
     $esc = [CuaWpf.Native]::GetAsyncKeyState(0x1B)
     if (($esc -band 0x8001) -ne 0 -and $now - $script:lastEsc -gt 700) {
       $script:lastEsc = $now
-      # ESC cancels what is happening NOW (Codex/Claude behaviour): kill the
-      # in-flight engine invocations, then leave a one-shot marker that tells the
-      # agent why its call died. No timed lockout of anything.
       try {
-        # Engine calls run as powershell -File cua.ps1.
-        $engines = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
-          Where-Object { $_.CommandLine -match '-File\s+\S*cua\.ps1' })
-        foreach ($proc in $engines) {
-          try { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
+        $cancelPath = Join-Path $env:TEMP "dsh-cua-stop-$token.signal"
+        [System.IO.File]::WriteAllText($cancelPath, '')
+        [System.IO.File]::WriteAllText($StopPath, ('{"at":' + $now + '}'), (New-Object System.Text.UTF8Encoding($false)))
+        $script:stoppedToken = $token
+      } catch { Note 'Unable to request ESC cancellation' }
+    }
+  }
+  if ($token -and $script:stoppedToken -eq $token) { $visible = $false }
+  if ($visible) { $script:lastSeen = $now }
+
+  $frame = $null
+  if ($visible) {
+    try {
+      if ($screenMode) {
+        $monitor = [System.Windows.Forms.Screen]::FromPoint([System.Windows.Forms.Cursor]::Position).Bounds
+        $frame = @($monitor.Left, $monitor.Top, $monitor.Right, $monitor.Bottom)
+      } else {
+        $r = New-Object CuaWpf.Native+RECT
+        $hwnd = [System.IntPtr][int64]$snapshot.target.hwnd
+        $ok = [CuaWpf.Native]::DwmGetWindowAttribute($hwnd, 9, [ref]$r, 16)
+        if ($ok -eq 0 -and $r.Right -gt $r.Left -and $r.Bottom -gt $r.Top) {
+          $frame = @($r.Left, $r.Top, $r.Right, $r.Bottom)
+        } else {
+          $frame = $snapshot.target.rect
         }
-        Note ('esc pressed - killed ' + @($engines).Count + ' engine process(es)')
-        if (@($engines).Count -gt 0) {
-          try {
-            [System.IO.File]::WriteAllText($StopPath, ('{"at":' + $now + '}'), (New-Object System.Text.UTF8Encoding($false)))
-            Note 'esc pressed - one-shot stop marker written'
-          } catch {}
-          $script:stoppedAt = $now
+      }
+      if ($frame -and $frame.Count -eq 4) {
+        $tl = $canvas.PointFromScreen((New-Object System.Windows.Point($frame[0], $frame[1])))
+        $br = $canvas.PointFromScreen((New-Object System.Windows.Point($frame[2], $frame[3])))
+        if ($br.X -gt $tl.X -and $br.Y -gt $tl.Y) { Set-Edges $tl.X $tl.Y ($br.X - $tl.X) ($br.Y - $tl.Y) }
+        else { $frame = $null }
+      } else { $frame = $null }
+    } catch { $frame = $null }
+  }
+  if (-not $frame) { foreach ($edge in $edges.Values) { $edge.Visibility = 'Collapsed' } }
+  $hasCursor = $visible -and $snapshot.cursor
+  $captionText.Text = if ($hasCursor) { [string]$snapshot.label } else { '' }
+  $cursorGroup.Visibility = if ($hasCursor) { 'Visible' } else { 'Hidden' }
+  $captionBorder.Visibility = if ($hasCursor -and $captionText.Text) { 'Visible' } else { 'Collapsed' }
+  $banner.Visibility = if ($visible -and $screenMode -and $frame) { 'Visible' } else { 'Collapsed' }
+  if ($banner.Visibility -eq 'Visible') {
+    $banner.Measure((New-Object System.Windows.Size([double]::PositiveInfinity, [double]::PositiveInfinity)))
+    $bannerW = $banner.DesiredSize.Width
+    [System.Windows.Controls.Canvas]::SetLeft($banner, ($tl.X + [Math]::Max(0, ($br.X - $tl.X - $bannerW) / 2)))
+    [System.Windows.Controls.Canvas]::SetTop($banner, ($tl.Y + 24))
+  }
+
+  # Write only for a matching action with a valid visible frame. On the
+  # first tick WPF schedules the edges/banner; a later tick plus DwmFlush
+  # is the compositor barrier before unblocking the pointer worker.
+  $paintCandidate = $frame -and $visible -and
+    (!$screenMode -or $banner.Visibility -eq 'Visible') -and
+    ($token -match '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$')
+  if (!$paintCandidate) {
+    $script:paintingToken = ''
+  } elseif ($token -ne $script:paintedToken) {
+    if ($token -ne $script:paintingToken) {
+      $script:paintingToken = $token
+    } else {
+      try {
+        if ([CuaWpf.Native]::DwmFlush() -eq 0 -and (ForegroundMatches $snapshot)) {
+          $paintPath = Join-Path $env:TEMP "dsh-cua-painted-$token.signal"
+          $receiptHwnd = if ($screenMode) { '0' } else { [string]$snapshot.target.hwnd }
+          [IO.File]::WriteAllText($paintPath, $receiptHwnd)
+          $script:paintedToken = $token
         }
       } catch {}
     }
   }
-  if ($script:stoppedAt -gt 0 -and ($now - $script:stoppedAt) -lt 4000) { $visible = $false }
-  if ($visible) { $script:lastSeen = $now }
 
-  $edgeOpacity = if ($visible) { 1.0 } else { 0.0 }
-  foreach ($child in $canvas.Children) {
-    if ($child -is [System.Windows.Shapes.Rectangle]) { $child.Opacity = $edgeOpacity }
-  }
-  $cursorGroup.Visibility = if ($visible) { 'Visible' } else { 'Hidden' }
-  $captionBorder.Visibility = if ($visible -and $captionText.Text) { 'Visible' } else { 'Collapsed' }
-  $banner.Visibility = if ($visible -and $screenMode) { 'Visible' } else { 'Collapsed' }
-  if ($banner.Visibility -eq 'Visible') {
-    $banner.Measure((New-Object System.Windows.Size([double]::PositiveInfinity, [double]::PositiveInfinity)))
-    $bannerW = $banner.DesiredSize.Width
-    [System.Windows.Controls.Canvas]::SetLeft($banner, [Math]::Max(0, ($width - $bannerW) / 2))
-    [System.Windows.Controls.Canvas]::SetTop($banner, [Math]::Max(24, $height * 0.12))
-  }
-
-
-  if ($visible -and $snapshot.label) { $captionText.Text = [string]$snapshot.label }
-  if ($visible -and $snapshot.cursor) {
-    $script:goalX = [double]$snapshot.cursor.x - $left
-    $script:goalY = [double]$snapshot.cursor.y - $top
+  if (-not $hasCursor) { $script:curX = -1.0; $script:curY = -1.0 }
+  if ($hasCursor) {
+    $point = $canvas.PointFromScreen((New-Object System.Windows.Point($snapshot.cursor.x, $snapshot.cursor.y)))
+    $script:goalX = $point.X
+    $script:goalY = $point.Y
     if ($script:curX -lt 0) { $script:curX = $script:goalX; $script:curY = $script:goalY }
     if ($snapshot.updated -ne $script:lastStamp) {
       $script:lastStamp = $snapshot.updated
@@ -319,7 +377,9 @@ $timer.Add_Tick({
   }
 
   if ($script:lastSeen -gt 0 -and ($now - $script:lastSeen) -gt 300000) {
+    $timer.Stop()
     $window.Close()
+    [System.Windows.Threading.Dispatcher]::CurrentDispatcher.InvokeShutdown()
   }
 })
 $timer.Start()

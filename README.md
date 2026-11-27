@@ -35,41 +35,27 @@ occlusion-proof `PrintWindow` capture), `computer_uitree`, `computer_ocr`,
 `computer_ui_action` (UI Automation patterns, acts without focusing the window).
 
 **Windows and apps** — `computer_window` (move/resize/min/max/topmost/untopmost/
-park), `computer_launch` (silent off-screen start, `--remote-debugging-port`
-support), `computer_tabs` / `computer_tab` (browser tabs through UI Automation).
+park), `computer_launch` (optional off-screen start), and `computer_tabs` /
+`computer_tab` (tab listing and selection through UI Automation).
 
-**Browser automation** — `computer_cdp`: list targets, evaluate JS, dump DOM,
-screenshot a tab, dispatch background input (click/drag/type/key/scroll), sample
-frame timing, write a DevTools trace with a phase breakdown and frame pacing.
+**Browser automation** — use [dsh-browser-bridge](dsh-browser-bridge/) for
+`browser_*` tools. The old `computer_cdp` tool is not part of this package.
+Do not start a browser with a remote debugging port.
 
-## On-screen indicator and consent rules
+## On-screen indicator and consent
 
-While the agent drives the machine, the user always knows what is happening:
-
-- **whole-screen input** (`click/type/scroll` without a window target) is refused
-  with `REFUSED` until the agent asks the user and passes `user_ready: true`;
-  the banner "DeepSeek using your computer / ESC to stop" and the ESC listener are
-  started *before* the input runs, not after it;
-- **ESC** cancels what is happening now, exactly like Codex/Claude computer use:
-  the in-flight engine process (or CDP helper) is killed at once and the next call
-  reports `STOPPED` a single time - including when the agent passed `user_ready`,
-  so an intervention is never swallowed. There is no timed lockout - the agent
-  asks the user and continues;
-- **a window or pid that does not resolve fails closed**: the engine raises
-  `window not found ... refusing to fall back to whole-screen input` instead of
-  acting on the desktop at the given coordinates;
-- **one app or one browser tab** needs no confirmation, and the indicator adapts:
-  - a soft DeepSeek-blue glow on the screen edges plus a gliding whale-cursor with
-    a short English `intent` caption ("open settings") while the controlled window
-    is in front — WPF with real per-pixel alpha, click-through (`HTTRANSPARENT`),
-    auto-started per call, asleep after 5 minutes;
-  - for browser tabs driven through `computer_cdp` the indicator lives **inside
-    the browser**: the tab's own favicon is replaced by a composite of the original
-    icon with the whale cursor on top (fetched, composited outside the browser, all
-    `icon` links swapped), plus a `[DSH working]` title marker; both are restored
-    when the work is done (a linger timer keeps the badge steady between
-    back-to-back calls);
-- captions, labels and tool text are English-only by design.
+- Window-targeted pointer and keyboard input must still be in the foreground
+  at dispatch. A pointer point must also hit the selected window; otherwise
+  the tool reports the reason without sending input to a different window.
+- Whole-screen input requires the user's confirmation via `user_ready: true`.
+  The Windows indicator shows a desktop banner for the duration of the call.
+- Window-targeted input uses a narrow halo around the active target, not around
+  every monitor. Pointer tools mark the absolute dispatch point. Successful
+  scoped actions have a short completion linger; failures and passive
+  inspection do not leave the desktop banner up.
+- The indicator is click-through and does not activate itself. ESC cancellation
+  is handled by the Windows indicator daemon. Use semantic UIA actions where
+  possible for interaction that does not move the real cursor.
 
 Design notes worth knowing:
 
@@ -96,38 +82,40 @@ Design notes worth knowing:
 
 ## Install
 
-Both plugins are ordinary DSH profile bundles. In the profile that should use them:
+All three plugins are DSH profile bundles. From a checkout, package the desired
+bundle and install its tarball into the profile you use. For example, to install
+Computer Use into the Web profile, run from the repository root:
 
 ```sh
-pnpm add dsh-computer-use dsh-artifact-panes
+npm pack ./dsh-computer-use
+dsh plugin --profile web add ./dsh-computer-use-0.1.0.tgz
 ```
 
-and add the bundle ids to `dsh.profile.bundles` in the profile's `package.json`.
-The computer-use plugin pulls its PowerShell engine and CDP helper from inside its
-own package, so nothing else has to be installed.
+Use the filename printed by `npm pack` if the package version differs. For
+Artifact Panes, pack `./artifact-panes`; for Browser Bridge, pack
+`./dsh-browser-bridge/plugin` (not the Browser Bridge repository subdirectory
+itself). Use your target profile instead of `web` when installing elsewhere.
 
-Requirements: Windows 10/11 for the computer-use engine (UI Automation, `PrintWindow`,
-`Windows.Media.Ocr`), Node.js for the CDP helper, `ffmpeg` on `PATH` for clip
-encoding, Chrome/Edge for the browser tools.
+- **Computer Use** bundles its PowerShell engine. It needs Windows 10/11 for
+  desktop input, screenshots and OCR, and FFmpeg on `PATH` only for video clips.
+  It does not include a CDP helper.
+- **Browser Bridge** is separate and requires Chrome or Edge with the extension
+  and native messaging host. Follow the [Browser Bridge setup](dsh-browser-bridge/README.md#install-once-done-by-the-user).
 
 ## Verification
 
-The computer-use package ships the suites we gate changes on:
+Run the portable regression suites from the repository root:
 
 ```sh
-node tools/contract.mjs      # cordis contract: inject(['tools']) → 20 registrations
-node tools/real-schema.mjs   # definitions accepted by the real @deepseek-ai/dsh-tools
-node tools/verify.mjs --live # catalogue, argument mapping, engines, occlusion-proof shot
-node tools/text-safety.mjs   # free text with quotes, $(), backticks and Cyrillic
-node tools/text-encoding.mjs # caption text survives a CP1251 round trip
-node tools/consent.mjs       # REFUSED without user_ready, ESC stop marker, restore
-node tools/inline-media.mjs  # screenshots carry an attachment and render an image block
-node tools/scenario.mjs      # silent launch → navigate → background click/type → trace
-node tools/live-tools.mjs    # background drag, frame recording, OCR, wait, clipboard, park
+node --test artifact-panes/test/*.test.mjs dsh-browser-bridge/test/*.test.mjs
+node dsh-computer-use/tools/contract.mjs
+node dsh-computer-use/tools/text-encoding.mjs
+pwsh -NoProfile -File dsh-computer-use/tools/input-contract.ps1
 ```
 
-`real-schema.mjs` loads the host package extracted from the installed `app.asar`
-(`node tools/asar.mjs extract …`), which catches schema mistakes before a restart.
+For the isolated indicator contract and live Windows follow-up, see the
+[plugin QA runbook](docs/qa/plugin-reliability.md). The PowerShell input
+contract uses fake native symbols and sends no actual input.
 
 ## License
 

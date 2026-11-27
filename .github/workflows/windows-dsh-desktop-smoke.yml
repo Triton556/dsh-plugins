@@ -1,0 +1,316 @@
+name: Windows DSH Desktop package smoke (QA branch only)
+on:
+  push:
+    branches: ['qa/plugin-reliability-2026-11-26']
+    paths: ['.github/workflows/windows-dsh-desktop-smoke.yml']
+permissions: {}
+jobs:
+  desktop-packaged:
+    if: github.repository == 'Triton556/dsh-plugins'
+    runs-on: windows-2025
+    timeout-minutes: 12
+    steps:
+      - name: Check out exact public QA commit
+        shell: pwsh
+        run: |
+          git init .
+          if ($LASTEXITCODE -ne 0) { throw 'git init failed' }
+          git fetch --depth 1 https://github.com/Triton556/dsh-plugins.git $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { throw 'git fetch failed' }
+          git checkout --detach FETCH_HEAD
+          if ($LASTEXITCODE -ne 0 -or (git rev-parse HEAD) -ne $env:GITHUB_SHA) { throw 'wrong checkout' }
+      - name: Test annotation capture and workspace routing
+        shell: pwsh
+        run: |
+          node --test artifact-panes/test/annotations.test.mjs artifact-panes/test/annotation-routing.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Annotation state or workspace routing regression failed' }
+          powershell.exe -NoProfile -File artifact-panes/test/window-capture-contract.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Window capture isolation contract failed' }
+      - name: Verify vendor signature and exercise the packaged desktop profile
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not [Environment]::UserInteractive -or (Get-Process -Id $PID).SessionId -eq 0) { throw 'No interactive runner session' }
+          $lab = (New-Item -ItemType Directory (Join-Path $env:RUNNER_TEMP 'dsh-packaged')).FullName
+          $env:DSH_HOME = Join-Path $lab 'home'
+          $env:DSH_DESKTOP_USER_DATA_DIR = Join-Path $lab 'electron'
+          $env:DSH_TELEMETRY_DISABLED = '1'
+          $env:DSH_TELEMETRY_MODE = 'DISABLED'
+          $env:DO_NOT_TRACK = '1'
+          Remove-Item Env:DEEPSEEK_API_KEY -ErrorAction SilentlyContinue
+          $installer = Join-Path $lab 'dsh-setup.exe'
+          $target = Join-Path $lab 'app'
+          $official = 'https://download.deepseek.com/desktop/dsh-latest-windows-x64.exe'
+          Invoke-WebRequest -Uri $official -MaximumRedirection 0 -OutFile $installer -TimeoutSec 120
+          $signature = Get-AuthenticodeSignature -FilePath $installer
+          $hash = (Get-FileHash -Algorithm SHA256 $installer).Hash
+          Write-Host "Installer SHA-256=$hash; signature=$($signature.Status); subject=$($signature.SignerCertificate.Subject)"
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '(?i)(?:^|,\s*)(?:O|CN)=[^,]*DeepSeek') {
+            throw 'Did not execute: official installer signature or publisher did not match'
+          }
+          if ($hash -ne '6482E4CAB56C389C9DFA643A8E1DBC8C051D8E73944C6FCA4A649234DE4A5A2D') { throw 'The verified Desktop installer changed; review the new version before executing' }
+          if ($target -match '\s') { throw 'The NSIS test install path must have no whitespace' }
+          $setup = Start-Process -FilePath $installer -ArgumentList @('/S',"/D=$target") -PassThru
+          if (!$setup.WaitForExit(180000)) { throw 'Vendor installer did not finish in three minutes' }
+          if ($setup.ExitCode -ne 0) { throw "Vendor installer exited $($setup.ExitCode)" }
+          $cli = Join-Path $target 'resources\runtime\cli\bin\dsh.cmd'
+          if (!(Test-Path $cli)) { throw 'Installer returned success but packaged dsh.cmd was not found at the requested path' }
+          $main = @(Get-ChildItem -LiteralPath $target -File -Filter '*.exe' | Where-Object { $_.Name -notmatch '(?i)uninstall|setup|crash' })
+          if ($main.Count -ne 1) { throw "Expected exactly one installed Desktop executable, found $($main.Count)" }
+          $exe = $main[0].FullName
+          $appSig = Get-AuthenticodeSignature -FilePath $exe
+          if ($appSig.Status -ne 'Valid' -or $appSig.SignerCertificate.Subject -notmatch '(?i)(?:^|,\s*)(?:O|CN)=[^,]*DeepSeek') { throw 'Did not launch: installed Desktop publisher did not match' }
+          Write-Host "Verified installed Desktop product version $($main[0].VersionInfo.ProductVersion)"
+          $manifest = Join-Path $env:DSH_HOME 'profiles\desktop\package.json'
+          Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+          function Wait-For([scriptblock]$check, [string]$failure, [int]$seconds = 45) {
+            $end = (Get-Date).AddSeconds($seconds)
+            do {
+              $result = & $check
+              if ($result) { return $result }
+              Start-Sleep -Milliseconds 500
+            } while ((Get-Date) -lt $end)
+            throw $failure
+          }
+          function Get-DesktopProcesses {
+            @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe })
+          }
+          function Launch-Desktop([string]$label) {
+            $app = Start-Process -FilePath $exe -ArgumentList @('--lang=en-US','--disable-background-networking','--no-first-run','--force-renderer-accessibility') -WorkingDirectory $lab -PassThru
+            $visible = Wait-For {
+              Get-DesktopProcesses | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+            } "No visible Desktop window during $label"
+            $uia = [Windows.Automation.AutomationElement]::FromHandle($visible.MainWindowHandle)
+            if (!$uia) { throw "No UI Automation root during $label" }
+            $root = $uia.FindFirst([Windows.Automation.TreeScope]::Descendants,
+              (New-Object Windows.Automation.PropertyCondition([Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Document)))
+            Write-Host "PASS: $label visible app window from installed executable; renderer accessibility document=$([bool]$root)"
+            return $visible
+          }
+          function Stop-TestDesktop {
+            $live = @(Get-DesktopProcesses)
+            foreach ($p in $live) {
+              if ($p.MainWindowHandle -ne 0) { [void]$p.CloseMainWindow() }
+            }
+            Start-Sleep -Seconds 3
+            foreach ($p in @(Get-DesktopProcesses)) { Stop-Process -Id $p.Id -ErrorAction SilentlyContinue }
+            [void](Wait-For { @(Get-DesktopProcesses).Count -eq 0 } 'Desktop cannot exit' 15)
+          }
+          try {
+            [void](Launch-Desktop 'first launch')
+            [void](Wait-For { Test-Path -LiteralPath $manifest } 'Desktop did not initialize the isolated profile')
+            Stop-TestDesktop
+            $packs = Join-Path $lab 'packs'
+            New-Item -ItemType Directory $packs | Out-Null
+            $spec = [ordered]@{
+              'dsh-computer-use' = 'dsh-computer-use'
+              'dsh-browser-bridge' = 'dsh-browser-bridge/plugin'
+              'dsh-artifact-panes' = 'artifact-panes'
+            }
+            $archives = @()
+            foreach ($p in $spec.Values) {
+              $result = npm pack (".\" + $p) --ignore-scripts --pack-destination $packs --json
+              if ($LASTEXITCODE -ne 0) { throw "QA tarball pack failed: $p" }
+              $item = ($result | Out-String | ConvertFrom-Json) | Select-Object -First 1
+              $archives += (Join-Path $packs $item.filename)
+            }
+            & $cli plugin --profile desktop add @archives
+            if ($LASTEXITCODE -ne 0) { throw 'Packaged dsh.cmd plugin add failed' }
+            $profile = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json
+            foreach ($archive in $archives) {
+              $stem = [IO.Path]::GetFileName($archive) -replace '-\d+\.\d+\.\d+.*\.tgz$', ''
+              if (!$profile.dependencies.PSObject.Properties[$stem] -or $profile.dsh.profile.bundles -notcontains $stem) {
+                throw "Package not installed and enabled in the desktop graph: $stem"
+              }
+              Write-Host "PASS: exact QA bundle present in packaged profile: $stem ($((Get-FileHash -Algorithm SHA256 $archive).Hash))"
+            }
+            $window = Launch-Desktop 'second launch, three QA bundles'
+            function Find-VisibleDesktopControl([string]$pattern) {
+              foreach ($proc in @(Get-DesktopProcesses)) {
+                if ($proc.MainWindowHandle -eq 0) { continue }
+                try {
+                  $root = [Windows.Automation.AutomationElement]::FromHandle($proc.MainWindowHandle)
+                  $items = $root.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
+                  foreach ($item in $items) {
+                    if ($item.Current.Name -match $pattern -and !$item.Current.IsOffscreen -and $item.Current.IsEnabled) {
+                      return $item
+                    }
+                  }
+                } catch [Windows.Automation.ElementNotAvailableException] {}
+              }
+            }
+            function Invoke-DesktopControl($control) {
+              $invoke = $null
+              $label = $control.Current.Name
+              if ($control.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$invoke)) {
+                ([Windows.Automation.InvokePattern]$invoke).Invoke()
+              } elseif ($control.TryGetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern, [ref]$invoke)) {
+                ([Windows.Automation.SelectionItemPattern]$invoke).Select()
+              } else { throw "Expected an actionable Desktop control: $label" }
+              Write-Host "Invoked built-in Desktop control: $label"
+            }
+            # The test profile is blank and no authorization is requested. Emit
+            # only built-in onboarding labels, not document text or credentials.
+            $allowedWords = '(?i)api|key|sign in|log ?in|skip|later|setup|set up|continue|密码|密钥|登录|跳过|稍后|继续'
+            $probeEnd = (Get-Date).AddSeconds(12)
+            $labels = @()
+            do {
+              $labels = @(Get-DesktopProcesses | Where-Object { $_.MainWindowHandle -ne 0 } | ForEach-Object {
+                $root = [Windows.Automation.AutomationElement]::FromHandle($_.MainWindowHandle)
+                $root.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) |
+                  ForEach-Object {
+                    $name = $_.Current.Name
+                    if ($name -match $allowedWords -and $name.Length -le 70 -and
+                        $_.Current.ControlType -in @([Windows.Automation.ControlType]::Button, [Windows.Automation.ControlType]::Hyperlink)) {
+                      $name
+                    }
+                  }
+              } | Sort-Object -Unique)
+              if ($labels.Count -ge 2) { break }
+              Start-Sleep -Milliseconds 500
+            } while ((Get-Date) -lt $probeEnd)
+            Write-Host "Observed built-in welcome buttons/links: $($labels -join ' | ')"
+            $keyOption = Wait-For {
+              Find-VisibleDesktopControl '^(?:Add API Key|API Key|(?:Use|Enter|Set up|Sign in with|Continue with)(?: an?| your| a DeepSeek)? API Key(?: instead)?|使用\s*API\s*密钥(?:登录)?|API\s*密钥登录)$'
+            } 'Official Desktop did not expose the documented API key option' 35
+            Invoke-DesktopControl $keyOption
+            $later = Wait-For {
+              Find-VisibleDesktopControl '^(?:Set up later|Skip for now|Do this later|稍后设置|跳过)$'
+            } 'No documented set-up-later control; no key or account was entered' 20
+            Invoke-DesktopControl $later
+            $workspace = Wait-For {
+              Find-VisibleDesktopControl '^(?:New chat|New session|Create a session|Workspace files|Start a conversation|New conversation|Plugins|Artifacts|新建会话)$'
+            } 'Set up later did not expose a workspace marker on the signed build' 45
+            Write-Host "PASS: reached the signed Desktop workspace without credentials: $($workspace.Current.Name)"
+            $plugins = Wait-For { Find-VisibleDesktopControl '^Plugins$' } 'Workspace did not expose the Plugins button' 15
+            Invoke-DesktopControl $plugins
+            function Get-AppUi {
+              foreach ($proc in @(Get-DesktopProcesses | Where-Object { $_.MainWindowHandle -ne 0 })) {
+                try {
+                  $root = [Windows.Automation.AutomationElement]::FromHandle($proc.MainWindowHandle)
+                  foreach ($el in $root.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)) {
+                    $el
+                  }
+                } catch [Windows.Automation.ElementNotAvailableException] {}
+              }
+            }
+            function Capture-TestDesktop([string]$kind) {
+              $live = Get-DesktopProcesses | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+              if (!$live) { return }
+              $dir = Join-Path $env:RUNNER_TEMP 'dsh-desktop-proof'
+              New-Item -ItemType Directory -Path $dir -Force | Out-Null
+              $file = Join-Path $dir ("$kind.png")
+              $engine = Join-Path $env:GITHUB_WORKSPACE 'dsh-computer-use\tools\cua.ps1'
+              try {
+                & powershell.exe -NoProfile -File $engine -Action shot -ProcessId $live.Id -Method print -Path $file
+                if ($LASTEXITCODE -ne 0) { Write-Warning 'Window snapshot unavailable on this runner' }
+              } catch { Write-Warning 'Window snapshot unavailable on this runner' }
+            }
+            $cardTests = [ordered]@{
+              'dsh-artifact-panes' = '(?:^|\b)(?:dsh-artifact-panes|Artifact Panes)(?:\b|$)'
+              'dsh-browser-bridge' = '(?:^|\b)(?:dsh-browser-bridge|Browser Bridge)(?:\b|$)'
+              'dsh-computer-use' = '(?:^|\b)(?:dsh-computer-use|Computer Use)(?:\b|$)'
+            }
+            try {
+              $marker = Wait-For {
+                Get-AppUi | Where-Object { $_.Current.Name -match '^(?:Add plugin|Installed plugins|Experimental plugins|Installed(?: \(\d+\))?)$' } | Select-Object -First 1
+              } 'Plugins page did not expose a normal list or tab marker' 25
+              Write-Host "Plugins page marker: $($marker.Current.Name)"
+              $tab = Find-VisibleDesktopControl '^Installed(?: \(\d+\))?$'
+              $direct = Get-AppUi | Where-Object { $_.Current.Name -match '^(?:Add plugin|Installed plugins)$' } | Select-Object -First 1
+              if ($tab -and !$direct) { Invoke-DesktopControl $tab }
+              $section = Wait-For {
+                Get-AppUi | Where-Object { $_.Current.Name -eq 'Installed plugins' } | Select-Object -First 1
+              } 'No installed-plugins heading on page' 12
+              $layout = @(Get-AppUi | Where-Object { $_.Current.Name -match '(?i)Installed plugins|dsh-artifact-panes|dsh-browser-bridge|dsh-computer-use|Artifact Panes|Browser Bridge|Computer Use' -and $_.Current.Name.Length -le 150 } |
+                ForEach-Object { "$($_.Current.ControlType.ProgrammaticName) offscreen=$($_.Current.IsOffscreen) top=$($_.Current.BoundingRectangle.Top) $($_.Current.Name)" } | Select-Object -First 35)
+              Write-Host "Installed layout before scrolling: $($layout -join ' | ')"
+              foreach ($p in $cardTests.GetEnumerator()) {
+                # Official experimental Artifact Panes may have the same title.
+                # Always re-query below the actual Installed plugins heading.
+                $found = $null
+                for ($attempt=0; $attempt -lt 10 -and !$found; $attempt++) {
+                  $all = @(Get-AppUi)
+                  $header = $all | Where-Object { $_.Current.Name -eq 'Installed plugins' } | Select-Object -First 1
+                  $headingY = $header.Current.BoundingRectangle.Top
+                  $candidates = @($all | Where-Object {
+                    $r = $_.Current.BoundingRectangle
+                    $_.Current.Name -match $p.Value -and $_.Current.Name.Length -le 150 -and
+                      $r.Width -gt 0 -and $r.Height -gt 0 -and $r.Top -gt $headingY
+                  })
+                  $found = $candidates | Where-Object { !$_.Current.IsOffscreen } | Select-Object -First 1
+                  if ($found) { break }
+                  $walk = if ($candidates.Count) { $candidates[0] } else { $header }
+                  $scrolled = $false
+                  $walker = [Windows.Automation.TreeWalker]::ControlViewWalker
+                  for ($i=0; $i -lt 20 -and $walk; $i++) {
+                    $sp = $null
+                    if ($walk.TryGetCurrentPattern([Windows.Automation.ScrollPattern]::Pattern,[ref]$sp) -and
+                        $sp.Current.VerticallyScrollable -and $sp.Current.VerticalScrollPercent -lt 99.9) {
+                      $sp.Scroll([Windows.Automation.ScrollAmount]::NoAmount,[Windows.Automation.ScrollAmount]::SmallIncrement)
+                      $scrolled = $true
+                      break
+                    }
+                    $walk = $walker.GetParent($walk)
+                  }
+                  if (!$scrolled -and $candidates.Count) {
+                    $si = $null
+                    if ($candidates[0].TryGetCurrentPattern([Windows.Automation.ScrollItemPattern]::Pattern,[ref]$si)) {
+                      ([Windows.Automation.ScrollItemPattern]$si).ScrollIntoView()
+                      $scrolled = $true
+                    }
+                  }
+                  if (!$scrolled) { break }
+                  Start-Sleep -Milliseconds 250
+                }
+                if (!$found) { throw "Could not assert a visible card below Installed plugins: $($p.Key)" }
+                Write-Host "PASS: installed QA bundle visible on the real Plugins page: $($p.Key) [$($found.Current.Name)]"
+              }
+              Capture-TestDesktop 'plugins'
+              $packagedShot = Join-Path $env:DSH_HOME 'profiles\desktop\node_modules\dsh-artifact-panes\shot.ps1'
+              if (!(Test-Path -LiteralPath $packagedShot)) { throw 'Artifact Panes capture script missing from the installed bundle' }
+              foreach ($name in @('index.js','client.js')) {
+                $installed = Join-Path (Split-Path -Parent $packagedShot) $name
+                $source = Join-Path (Join-Path $env:GITHUB_WORKSPACE 'artifact-panes') $name
+                if ((Get-FileHash -Algorithm SHA256 $installed).Hash -ne (Get-FileHash -Algorithm SHA256 $source).Hash) {
+                  throw "Installed annotation route/client does not match the tested checkout: $name"
+                }
+              }
+              Write-Host 'PASS: installed Artifact Panes routing host and client match the exact QA commit'
+              $sourceShot = Join-Path $env:GITHUB_WORKSPACE 'artifact-panes\shot.ps1'
+              if ((Get-FileHash -Algorithm SHA256 $packagedShot).Hash -ne (Get-FileHash -Algorithm SHA256 $sourceShot).Hash) { throw 'Installed capture is not the exact QA script' }
+              $destination = Join-Path $env:RUNNER_TEMP 'dsh-desktop-proof\artifact-panes-native-crop.png'
+              & powershell.exe -NoProfile -File $packagedShot -Out $destination -X 278 -Y 41 -W 215 -H 70 -Pad 0
+              if ($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $destination)) { throw 'Native installed window capture failed' }
+              Add-Type -AssemblyName System.Drawing
+              $crop = New-Object System.Drawing.Bitmap $destination
+              try {
+                $dark = 0
+                $light = 0
+                for ($x=0; $x -lt $crop.Width; $x+=2) {
+                  for ($y=0; $y -lt $crop.Height; $y+=2) {
+                    $c = $crop.GetPixel($x, $y)
+                    if ($c.R -lt 120 -and $c.G -lt 120 -and $c.B -lt 120) { $dark++ }
+                    if ($c.R -gt 190 -and $c.G -gt 190 -and $c.B -gt 190) { $light++ }
+                  }
+                }
+                if ($crop.Width -ne 215 -or $crop.Height -ne 70 -or $dark -lt 15 -or $light -lt 500) { throw 'Signed Desktop target crop blank or wrong geometry' }
+              } finally { $crop.Dispose() }
+              Write-Host "PASS: installed Artifact Panes helper captured the real signed Desktop window (215x70, dark=$dark light=$light)"
+            } catch {
+              $outline = @(Get-AppUi | Where-Object { !$_.Current.IsOffscreen -and $_.Current.Name -and $_.Current.Name.Length -le 110 -and $_.Current.Name -match '(?i)plugin|installed|settings|artifact|browser bridge|computer use|session' } |
+                ForEach-Object { "$($_.Current.ControlType.ProgrammaticName) $($_.Current.Name)" } | Sort-Object -Unique | Select-Object -First 35)
+              Write-Host "Visible Plugins-page candidates: $($outline -join ' | ')"
+              Capture-TestDesktop 'plugins-discovery'
+              throw
+            }
+            Write-Host 'Scope: signed Desktop workspace, package hashes, and installed native crop helper. No model call, complete annotation UI flow, or installed DSH tool dispatch was asserted.'
+          } finally { Stop-TestDesktop }
+      - name: Upload isolated app screenshot
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: dsh-desktop-plugins-proof
+          path: ${{ runner.temp }}/dsh-desktop-proof/*.png
+          retention-days: 14
+          if-no-files-found: ignore

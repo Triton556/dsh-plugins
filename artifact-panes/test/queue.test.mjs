@@ -326,3 +326,25 @@ function rig(options = {}) {
 await rm(root, { recursive: true, force: true });
 console.log('artifact-panes deferred queue: OK');
 console.log('  queue limit:', LIMITS.queue, '| deferred ttl:', LIMITS.deferred, 'ms');
+
+// A renderer can disappear without sending bye (window close/crash). Hand off
+// unstarted durable work, but never replay a side effect that may have begun.
+{
+  let now = 1000;
+  const broker = new CommandBroker({ now: () => now, heartbeatMs: 40 });
+  const sessionId = 'renderer-takeover';
+  const auth = broker.bind(sessionId);
+  broker.enqueue(sessionId, 'dsh_artifact_open', { path: 'artifacts/page-8.html' });
+  const sent = broker.poll(auth, 'renderer-a');
+  assert.ok(sent);
+  assert.throws(() => broker.poll(auth, 'renderer-b'), e => e.code === 'CLIENT_OWNED');
+  now += 41;
+  const recovered = broker.poll(auth, 'renderer-b');
+  assert.equal(recovered?.id, sent.id, 'new renderer picks up the unstarted request immediately');
+  assert.throws(() => broker.receipt(auth, 'renderer-a', sent.id, 'start'), e => e.code === 'STALE_COMMAND');
+  broker.receipt(auth, 'renderer-b', sent.id, 'start');
+  now += 41;
+  assert.equal(broker.poll(auth, 'renderer-c'), null, 'started work is not replayed');
+  assert.equal(broker.journal.at(-1).status, 'UNKNOWN_EFFECT');
+  broker.dispose();
+}

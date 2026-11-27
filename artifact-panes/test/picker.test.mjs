@@ -42,6 +42,10 @@ function makeEl(tag) {
     outerHTML: '<' + tag + '></' + tag + '>',
     parentElement: null,
     appendChild(child) { this.children.push(child); child.parentElement = this; return child; },
+    addEventListener() {},
+    querySelectorAll(selector) { return selector === '[data-dsh-marker]' ? this.children.filter(el => el.getAttribute('data-dsh-marker')) : []; },
+    get firstChild() { return this.children[0]; },
+    removeChild(child) { this.children.splice(this.children.indexOf(child), 1); },
     setAttribute(name, value) { this._attrs[name] = String(value); },
     getAttribute(name) { return name in this._attrs ? this._attrs[name] : null; },
     getBoundingClientRect() { return { left: 10, top: 20, width: 100, height: 30 }; },
@@ -65,6 +69,7 @@ const document = {
   body,
   documentElement: makeEl('html'),
   createElement: (tag) => makeEl(tag),
+  querySelectorAll: (selector) => selector === 'button#send' ? [button] : [],
   addEventListener: (type, fn) => { docListeners[type] = fn; },
   getComputedStyle: () => ({
     getPropertyValue(name) {
@@ -74,10 +79,12 @@ const document = {
   }),
 };
 const windowListeners = {};
+const markerFrames = [];
 const posted = [];
 const window = {
   innerWidth: 1200,
   innerHeight: 800,
+  requestAnimationFrame(fn) { markerFrames.push(fn); return markerFrames.length; },
   addEventListener: (type, fn) => { windowListeners[type] = fn; },
 };
 const parent = { postMessage: (msg) => posted.push(msg) };
@@ -93,7 +100,7 @@ assert.equal(prevented, false, 'picker is inert until enabled');
 assert.equal(posted.length, 0);
 
 // 2. Enabling shows the hint.
-const send = (data) => windowListeners.message({ data });
+const send = (data) => windowListeners.message({ data, source: parent });
 send({ type: 'dsh-pick', on: true });
 const hint = body.children.find((el) => el.textContent === 'Комментарий: клик по элементу');
 assert.ok(hint, 'hint banner is mounted');
@@ -143,6 +150,10 @@ assert.equal(climbed.id, 'app');
 docListeners.keydown({ key: 'Escape' });
 assert.equal(document.documentElement.style.cursor, '', 'cursor restored');
 assert.equal(posted.filter((m) => m.type === 'dsh-pick-state').pop().on, false);
+assert.equal(posted.filter((m) => m.type === 'dsh-pick-state').pop().dismissed, true);
+send({ type: 'dsh-pick', on: true });
+send({ type: 'dsh-pick', on: false });
+assert.equal(posted.filter((m) => m.type === 'dsh-pick-state').pop().dismissed, false, 'host cleanup is not a user Escape');
 
 prevented = false;
 docListeners.click({ target: button, preventDefault: () => { prevented = true; }, stopPropagation: () => {} });
@@ -151,3 +162,28 @@ assert.equal(prevented, false, 'the page works again after leaving the mode');
 console.log('artifact-panes picker: OK');
 console.log('  selector:', p.selector);
 console.log('  style:', p.styleText.slice(0, 60));
+
+let top = 200;
+button.getBoundingClientRect = () => ({ left: 70, top, width: 100, height: 30 });
+send({ type: 'dsh-annotation-markers', markers: [{ id: 'ann', number: 1, selector: 'button#send' }] });
+const layer = body.children.find(el => el.getAttribute('data-dsh-markers'));
+const pin = layer.children[0];
+assert.equal(pin.style.top, '208px');
+top -= 50;
+windowListeners.scroll();
+windowListeners.scroll();
+assert.equal(markerFrames.length, 1, 'schedule just one measurement per frame');
+markerFrames.shift()();
+assert.equal(pin.style.top, '158px', 'same live pin follows the selected button');
+top = -100;
+windowListeners.scroll();
+markerFrames.shift()();
+assert.equal(pin.style.display, 'none', 'offscreen targets cannot leave floating markers');
+top = 320;
+windowListeners.resize();
+markerFrames.shift()();
+assert.equal(pin.style.top, '328px');
+assert.equal(pin.style.display, 'block');
+send({ type: 'dsh-annotation-markers', markers: [] });
+assert.equal(layer.children.length, 0);
+console.log('PASS marker follows the actual target across scroll/resize; no phantom marker');

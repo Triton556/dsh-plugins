@@ -11,6 +11,9 @@ const HOST_NAME = 'com.dsh.browser';
 const CDP_VERSION = '1.3';
 const DETACH_IDLE_MS = 20000;
 const SNAPSHOT_TTL_MS = 60000;
+const SHOT_BACKGROUND_MS = 2000;
+const SHOT_ACTIVE_MS = 6000;
+const SHOT_SETUP_MS = 1500;
 
 let port = null;
 let retryTimer = null;
@@ -19,6 +22,13 @@ const attached = new Set();
 const detachTimers = new Map();
 const claims = new Map();      // tabId -> { title, url, at }
 const snapshots = new Map();   // tabId -> { at, nodes }
+const snapshotReads = new Map(); // tabId -> identity of the current read
+const shotReads = new Map();     // tabId -> identity of the current capture
+
+function invalidateSnapshot(tabId) {
+  snapshots.delete(tabId);
+  snapshotReads.delete(tabId);
+}
 
 // ------------------------------------------------------------------ plumbing
 
@@ -145,17 +155,24 @@ async function detach(tabId) {
 chrome.debugger.onDetach.addListener((source) => {
   if (source && source.tabId !== undefined) { attached.delete(source.tabId); cancelDetach(source.tabId); }
 });
+chrome.tabs.onUpdated.addListener((tabId, change) => {
+  if (change.status === 'loading' || change.url !== undefined) invalidateSnapshot(tabId);
+  if (change.status === 'loading' || change.url !== undefined || change.discarded === true) shotReads.delete(tabId);
+});
 chrome.tabs.onRemoved.addListener((tabId) => {
-  attached.delete(tabId); cancelDetach(tabId); claims.delete(tabId); snapshots.delete(tabId);
+  attached.delete(tabId); cancelDetach(tabId); claims.delete(tabId); invalidateSnapshot(tabId);
+  shotReads.delete(tabId);
 });
 
 async function pickTab(args) {
   if (args.tabId !== undefined && args.tabId !== null) return Number(args.tabId);
   const all = await tabsQuery({});
   if (args.tabMatch) {
-    const needle = String(args.tabMatch).toLowerCase();
-    const hit = all.find((t) => (t.title || '').toLowerCase().includes(needle) || (t.url || '').toLowerCase().includes(needle));
-    if (hit) return hit.id;
+    const needle = String(args.tabMatch).trim().toLowerCase();
+    if (!needle) throw new Error('tabMatch must contain a title or URL substring; use tabs.list or pass tabId');
+    const hits = all.filter((t) => (t.title || '').toLowerCase().includes(needle) || (t.url || '').toLowerCase().includes(needle));
+    if (hits.length === 1) return hits[0].id;
+    if (hits.length > 1) throw new Error('tabMatch matched ' + hits.length + ' tabs; use tabs.list and pass an exact tabId');
     throw new Error('no tab matching ' + args.tabMatch);
   }
   const active = all.find((t) => t.active);
@@ -201,6 +218,21 @@ async function collectBounds(tabId, backendIds) {
 
 async function axSnapshot(tabId, args) {
   await ensureLoaded(tabId, args);
+  const read = {};
+  snapshotReads.set(tabId, read);
+  try {
+    const result = await readAxSnapshot(tabId, args);
+    if (snapshotReads.get(tabId) !== read) {
+      throw new Error('Browser page changed or the snapshot was superseded; call ax.snapshot again.');
+    }
+    snapshots.set(tabId, { at: Date.now(), nodes: result.nodes });
+    return result;
+  } finally {
+    if (snapshotReads.get(tabId) === read) snapshotReads.delete(tabId);
+  }
+}
+
+async function readAxSnapshot(tabId, args) {
   await attach(tabId);
   await cdp(tabId, 'Accessibility.enable');
   const tree = await cdp(tabId, 'Accessibility.getFullAXTree');
@@ -231,7 +263,6 @@ async function axSnapshot(tabId, args) {
     for (const node of nodes) if (node.backendNodeId && boxes.has(node.backendNodeId)) node.bounds = boxes.get(node.backendNodeId);
   }
   const document = await cdp(tabId, 'Runtime.evaluate', { expression: 'location.href', returnByValue: true });
-  snapshots.set(tabId, { at: Date.now(), nodes });
   return { tabId, url: (document.result && document.result.value) || null, count: nodes.length, nodes };
 }
 
@@ -243,6 +274,51 @@ function assertPage(url) {
   if (!url) return;
   if (/^(chrome|edge|about|devtools|chrome-extension|edge-extension):/i.test(url)) {
     throw new Error('internal pages are not drivable: ' + url);
+  }
+}
+
+async function shotDocument(tabId) {
+  const { frameTree } = await withTimeout(cdpRaw(tabId, 'Page.getFrameTree'), SHOT_SETUP_MS, 'identify screenshot document');
+  const frame = frameTree?.frame;
+  if (!frame?.id || !frame.loaderId || !frame.url) throw new Error('Cannot identify the screenshot document; retry after it has loaded.');
+  assertPage(frame.url);
+  return JSON.stringify([frame.id, frame.loaderId, frame.url, frame.urlFragment || '']);
+}
+
+async function pageShot(tabId, args) {
+  const capture = {};
+  shotReads.set(tabId, capture);
+  const assertCurrent = () => {
+    if (shotReads.get(tabId) !== capture) throw new Error('Browser page changed or the capture was superseded; take a new screenshot.');
+  };
+  try {
+    const tab = await tabsGet(tabId);
+    assertPage(tab.url);
+    if (tab.discarded) throw new Error('Chrome unloaded the selected tab. Select the intended tab in Chrome and retry.');
+    if (tab.status !== 'complete' || tab.pendingUrl) throw new Error('The selected tab is still loading; retry when it finishes.');
+    await withTimeout(attach(tabId), SHOT_SETUP_MS, 'attach for screenshot');
+    const before = await shotDocument(tabId);
+    assertCurrent();
+    const format = args.format === 'jpeg' ? 'jpeg' : 'png';
+    const deadline = tab.active ? SHOT_ACTIVE_MS : SHOT_BACKGROUND_MS;
+    let shot;
+    try {
+      shot = await withTimeout(cdpRaw(tabId, 'Page.captureScreenshot', {
+        format, quality: format === 'jpeg' ? Number(args.quality) || 80 : undefined, captureBeyondViewport: false,
+      }), deadline, 'Page.captureScreenshot');
+    } catch (error) {
+      assertCurrent();
+      if (error?.message !== 'timeout after ' + deadline + 'ms: Page.captureScreenshot') throw error;
+      throw new Error('Chrome did not produce a screenshot in ' + (deadline / 1000) +
+        ' seconds. Select the intended tab in Chrome and retry. No tab was activated by the bridge.');
+    }
+    const after = await shotDocument(tabId);
+    assertCurrent();
+    if (before !== after) throw new Error('Browser page changed during capture; take a new screenshot.');
+    if (typeof shot?.data !== 'string' || !shot.data) throw new Error('Chrome returned an empty screenshot; retry when the page is visible.');
+    return { tabId, format, data: shot.data };
+  } finally {
+    if (shotReads.get(tabId) === capture) shotReads.delete(tabId);
   }
 }
 
@@ -271,16 +347,17 @@ async function frameContexts(tabId) {
 
 // ------------------------------------------------------------- M1: actions
 
-// Chrome drops a debugger session on navigation or when the user cancels the
-// infobar. Retry once with a fresh attach before surfacing the error.
-async function withAttach(tabId, fn) {
+// A debugger can detach after dispatch succeeded but before its reply. For
+// mutating commands that is an uncertain effect, not a reason to repeat input.
+async function withMutation(tabId, fn) {
   await attach(tabId);
   try { return await fn(); }
   catch (error) {
-    if (!/detached|not attached|target closed/i.test(String(error && error.message))) throw error;
+    if (!/detached|not attached|target closed|timeout after/i.test(String(error?.message || error))) throw error;
     attached.delete(tabId);
-    await attach(tabId);
-    return fn();
+    cancelDetach(tabId);
+    invalidateSnapshot(tabId);
+    throw new Error('Browser action may already have run. Inspect the tab again before retrying.', { cause: error });
   }
 }
 
@@ -317,7 +394,7 @@ async function clickAt(tabId, x, y) {
 
 async function axClick(tabId, index) {
   const node = snapshotNode(tabId, index);
-  return withAttach(tabId, async () => {
+  return withMutation(tabId, async () => {
     const point = await nodeBox(tabId, node.backendNodeId);
     await clickAt(tabId, point.x, point.y);
     return { tabId, index, role: node.role, name: node.name, clicked: point };
@@ -326,7 +403,7 @@ async function axClick(tabId, index) {
 
 async function axSetValue(tabId, index, value) {
   const node = snapshotNode(tabId, index);
-  return withAttach(tabId, async () => {
+  return withMutation(tabId, async () => {
     const resolved = await cdp(tabId, 'DOM.resolveNode', { backendNodeId: node.backendNodeId });
     const objectId = resolved && resolved.object && resolved.object.objectId;
     if (!objectId) throw new Error('cannot resolve the node for writing');
@@ -391,7 +468,7 @@ function describeKey(combo) {
 async function pressKeys(tabId, keys) {
   const combos = Array.isArray(keys) ? keys : String(keys || '').split(',').map((s) => s.trim()).filter(Boolean);
   if (!combos.length) throw new Error('keys is required');
-  return withAttach(tabId, async () => {
+  return withMutation(tabId, async () => {
     // Keyboard events only reach the tab that owns the focused frame.
     const tab = await tabsGet(tabId);
     if (!tab.active) { await tabsUpdate(tabId, { active: true }); await new Promise((r) => setTimeout(r, 150)); }
@@ -412,9 +489,11 @@ async function pageNavigate(tabId, url) {
   if (/^(chrome|edge|about|devtools|chrome-extension|edge-extension):/i.test(url)) {
     throw new Error('internal pages are not drivable: ' + url);
   }
-  return withAttach(tabId, async () => {
+  return withMutation(tabId, async () => {
     await cdp(tabId, 'Page.enable');
-    await cdp(tabId, 'Page.navigate', { url });
+    invalidateSnapshot(tabId);
+    const navigation = await cdp(tabId, 'Page.navigate', { url });
+    if (navigation?.errorText) throw new Error('Navigation failed: ' + navigation.errorText);
     const deadline = Date.now() + 20000;
     while (Date.now() < deadline) {
       try {
@@ -475,24 +554,17 @@ async function run(cmd, args) {
     }
 
     case 'page.shot': {
-      const tabId = await pickTab(args);
-      const tab = await tabsGet(tabId);
-      assertPage(tab.url);
-      await ensureLoaded(tabId, args);
-      await attach(tabId);
-      const format = args.format === 'jpeg' ? 'jpeg' : 'png';
-      const shot = await cdp(tabId, 'Page.captureScreenshot', {
-        format, quality: format === 'jpeg' ? Number(args.quality) || 80 : undefined, captureBeyondViewport: false,
-      });
-      return { tabId, format, data: shot.data };
+      return pageShot(await pickTab(args), args);
     }
 
     case 'page.wait': {
+      if (!args.selector && !args.text) throw new Error('selector or text is required');
       const tabId = await pickTab(args);
+      const tab = await tabsGet(tabId);
+      assertPage(tab.url);
       await attach(tabId);
       const timeout = Math.min(Number(args.timeoutMs) > 0 ? Number(args.timeoutMs) : 10000, 30000);
       const started = Date.now();
-      if (!args.selector && !args.text) throw new Error('selector or text is required');
       const expression = args.selector
         ? `(function(){ return !!document.querySelector(${JSON.stringify(args.selector)}); })()`
         : `(function(){ return document.body ? document.body.innerText.includes(${JSON.stringify(args.text)}) : false; })()`;
@@ -538,7 +610,7 @@ async function run(cmd, args) {
       const tab = await tabsGet(tabId);
       assertPage(tab.url);
       if (typeof args.text !== 'string') throw new Error('text is required');
-      return withAttach(tabId, async () => {
+      return withMutation(tabId, async () => {
         await cdp(tabId, 'Input.insertText', { text: args.text });
         return { tabId, typed: args.text.length };
       });

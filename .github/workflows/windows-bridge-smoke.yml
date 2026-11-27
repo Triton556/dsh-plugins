@@ -1,0 +1,414 @@
+name: Windows Browser Bridge smoke (QA branch only)
+on:
+  push:
+    branches: ['qa/plugin-reliability-2026-11-26']
+    paths: ['.github/workflows/windows-bridge-smoke.yml']
+permissions: {}
+jobs:
+  native-bridge:
+    if: github.repository == 'Triton556/dsh-plugins'
+    runs-on: windows-2025
+    timeout-minutes: 12
+    steps:
+      - name: Check out the exact public QA commit
+        shell: pwsh
+        run: |
+          git init .
+          if ($LASTEXITCODE -ne 0) { throw 'git init failed' }
+          git fetch --depth 1 https://github.com/Triton556/dsh-plugins.git $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { throw 'git fetch failed' }
+          git checkout --detach FETCH_HEAD
+          if ($LASTEXITCODE -ne 0 -or (git rev-parse HEAD) -ne $env:GITHUB_SHA) { throw 'wrong checkout' }
+          node --test dsh-browser-bridge/test/extension.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Bridge regression tests failed' }
+          pwsh -NoProfile -File dsh-computer-use/tools/input-contract.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Computer Use logic tests failed' }
+      - name: Build and register on the disposable runner
+        shell: pwsh
+        working-directory: dsh-browser-bridge
+        run: |
+          if (Test-Path host/NativeHost.exe) { throw 'expected a clean build' }
+          powershell.exe -NoProfile -File build.ps1
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path host/NativeHost.exe)) { throw 'native host build failed' }
+          powershell.exe -NoProfile -File install-host.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'native host registration failed' }
+      - name: Record interactive desktop availability (no desktop input)
+        shell: powershell
+        run: |
+          Add-Type -AssemblyName System.Windows.Forms
+          $session = (Get-Process -Id $PID).SessionId
+          $screens = @([Windows.Forms.Screen]::AllScreens)
+          $bounds = @($screens | ForEach-Object { $_.Bounds.ToString() }) -join '; '
+          Write-Host "UI capability only: UserInteractive=$([Environment]::UserInteractive), SessionId=$session, screen count=$($screens.Count), bounds=$bounds"
+      - name: Test the real extension and native messaging transport on loopback
+        shell: pwsh
+        run: |
+          $lab = Join-Path $env:RUNNER_TEMP 'dsh-bridge-smoke'
+          New-Item -ItemType Directory -Path $lab | Out-Null
+          Set-Location $lab
+          $env:PUPPETEER_CACHE_DIR = Join-Path $lab 'chrome-cache'
+          node --version
+          npm install --no-audit --no-fund --ignore-scripts --save-exact puppeteer@25.1.0 pngjs@7.0.0
+          if ($LASTEXITCODE -ne 0) { throw 'Puppeteer setup failed' }
+          npx --no-install puppeteer browsers install chrome@149.0.7827.22
+          if ($LASTEXITCODE -ne 0) { throw 'Chrome for Testing download failed' }
+          @'
+          import assert from 'node:assert/strict';
+          import { execFile, spawn } from 'node:child_process';
+          import { readFile, mkdtemp, rm, stat } from 'node:fs/promises';
+          import { createServer } from 'node:http';
+          import { tmpdir } from 'node:os';
+          import { join, resolve } from 'node:path';
+          import { setTimeout as delay } from 'node:timers/promises';
+          import { promisify } from 'node:util';
+          import puppeteer from 'puppeteer';
+          import { PNG } from 'pngjs';
+          
+          const root = resolve(process.env.GITHUB_WORKSPACE, 'dsh-browser-bridge');
+          const run = promisify(execFile);
+          const tmp = await mkdtemp(join(tmpdir(), 'bridge-fixture-'));
+          const bridge = join(root, 'bridge.mjs');
+          const expected = (await readFile(join(root, 'extension-id.txt'), 'utf8')).split('=')[1].trim();
+          assert.match(expected, /^[a-p]{32}$/);
+          const counts = { a: [], b: [] };
+          const server = createServer((req, res) => {
+            const path = new URL(req.url, 'http://localhost').pathname;
+            if (path === '/event/a' || path === '/event/b') {
+              const url = new URL(req.url, 'http://localhost');
+              counts[path.at(-1)].push(url.searchParams.get('trusted'));
+              res.writeHead(204).end();
+              return;
+            }
+            const variant = path === '/qa-bridge/a' ? 'a' : path === '/qa-bridge/b' ? 'b' : 'next';
+            res.setHeader('Content-Type', 'text/html; charset=UTF-8');
+            const color = { a: 'rgb(218,42,35)', b: 'rgb(38,178,67)', next: 'rgb(163,88,191)' }[variant];
+            res.end('<!doctype html><title>Bridge fixture</title><style>html{background:' + color +
+              '}</style><label for="value">Fixture value</label>' +
+              '<input id="value" value="initial"><button>Count click</button>' +
+              '<script>document.querySelector("button").onclick = e => fetch("/event/' + variant +
+              '?trusted=" + e.isTrusted);</script>');
+          });
+          await new Promise((yes, no) => {
+            server.once('error', no);
+            server.listen(0, '127.0.0.1', yes);
+          });
+          const base = 'http://127.0.0.1:' + server.address().port + '/qa-bridge/';
+          let browser;
+          async function send(cmd, args = {}) {
+            return await new Promise((yes, no) => {
+              const child = spawn(process.execPath, [bridge], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+              let out = '', err = '';
+              const timer = setTimeout(() => child.kill(), cmd === 'page.shot' ? 65000 : 12000);
+              child.stdout.setEncoding('utf8').on('data', x => out += x);
+              child.stderr.setEncoding('utf8').on('data', x => err += x);
+              child.on('error', e => { clearTimeout(timer); no(e); });
+              child.stdin.on('error', () => {});
+              child.on('close', code => {
+                clearTimeout(timer);
+                try {
+                  const reply = JSON.parse(out);
+                  assert.equal(code, reply.ok ? 0 : 1, cmd + ' inconsistent exit code');
+                  yes(reply);
+                } catch (e) {
+                  no(new Error(cmd + ' did not receive a valid reply (exit ' + code + '): ' + err.trim(), { cause: e }));
+                }
+              });
+              child.stdin.end(JSON.stringify({ cmd, args }));
+            });
+          }
+          async function call(cmd, args) {
+            const reply = await send(cmd, args);
+            assert.equal(reply.ok, true, cmd + ': ' + reply.error);
+            return reply.data;
+          }
+          async function negative(cmd, args, pattern) {
+            const reply = await send(cmd, args);
+            assert.equal(reply.ok, false, cmd + ' unexpectedly succeeded');
+            assert.match(reply.error, pattern);
+          }
+          async function until(fn, label) {
+            let last;
+            const end = Date.now() + 20000;
+            do {
+              try { return await fn(); } catch (e) { last = e; }
+              await delay(300);
+            } while (Date.now() < end);
+            throw new Error(label + ': ' + last?.message, { cause: last });
+          }
+          async function launch(profile) {
+            browser = await puppeteer.launch({
+              headless: false, pipe: true, enableExtensions: true, timeout: 30000,
+              userDataDir: join(tmp, profile),
+              args: ['--no-first-run', '--disable-background-networking', '--no-default-browser-check'],
+            });
+            assert.match(await browser.version(), /149\.0\.7827\.22/);
+            const ext = await browser.installExtension(join(root, 'extension'));
+            assert.equal(ext, expected, 'installed extension ID differs from host allowlist');
+            const work = await browser.waitForTarget(t => t.type() === 'service_worker' &&
+              t.url() === 'chrome-extension://' + ext + '/background.js', { timeout: 15000 });
+            assert.ok(work, 'MV3 worker not found');
+            const ping = await until(() => call('ping'), 'MV3 worker could not reach Windows host / named pipe');
+            assert.equal(ping.host, 'com.dsh.browser');
+          }
+          try {
+            await launch('first');
+            const check = await run('powershell.exe', ['-NoProfile', '-File', join(root, 'check.ps1')], { timeout: 20000 });
+            console.log((check.stdout || '').trim());
+            const pa = await browser.newPage(), pb = await browser.newPage();
+            await pa.goto(base + 'a'); await pb.goto(base + 'b');
+            const { tabs } = await call('tabs.list');
+            const a = tabs.find(t => t.url === base + 'a'), b = tabs.find(t => t.url === base + 'b');
+            assert.ok(a && b && a.id !== b.id, 'two fixture tab IDs missing');
+            await negative('ax.snapshot', { tabMatch: '/qa-bridge/' }, /matched 2 tabs.*exact tabId/i);
+            await call('tabs.claim', { tabId: a.id, expectUrl: base + 'a', expectTitle: 'Bridge fixture' });
+            const args = { tabId: a.id };
+            const { nodes } = await call('ax.snapshot', args);
+            const button = nodes.find(n => n.role === 'button' && n.name === 'Count click');
+            const field = nodes.find(n => n.role === 'textbox' && n.name === 'Fixture value');
+            assert.ok(button && field, 'fixture accessible nodes missing');
+            await call('ax.click', { ...args, index: button.index });
+            await until(() => assert.deepEqual(counts.a, ['true']), 'trusted click in A');
+            assert.deepEqual(counts.b, [], 'wrong tab received input');
+            await call('ax.setValue', { ...args, index: field.index, value: '' });
+            assert.equal(await pa.$eval('#value', x => x.value), '');
+            assert.equal(await pb.$eval('#value', x => x.value), 'initial');
+            console.log('PASS: trusted click A=1 B=0, clearing A only');
+            const getTabs = async () => (await call('tabs.list')).tabs;
+            async function checkShot(id, label, rgb, activeBefore, allowUnrendered) {
+              const shot = join(tmp, label + '.png');
+              const before = (await getTabs()).find(t => t.id === id);
+              assert.equal(before.active, activeBefore);
+              const start = Date.now();
+              const reply = await send('page.shot', { tabId: id, out: shot });
+              const ms = Date.now() - start;
+              const after = (await getTabs()).find(t => t.id === id);
+              assert.equal(after.active, activeBefore, label + ': command changed the active tab');
+              if (!reply.ok) {
+                assert.ok(allowUnrendered, label + ': ' + reply.error);
+                assert.match(reply.error, /did not produce a screenshot in 2 seconds.*select the intended tab/i);
+                assert.ok(ms < 6500, label + ': inactive refusal too slow: ' + ms + ' ms');
+                await assert.rejects(stat(shot), { code: 'ENOENT' });
+                console.log('PASS: ' + label + ' reported unavailable without switching or writing in ' + ms + ' ms');
+                return;
+              }
+              assert.equal(reply.data.tabId, id);
+              const decoded = PNG.sync.read(await readFile(shot));
+              const offset = ((decoded.height - 12) * decoded.width + (decoded.width - 12)) * 4;
+              const pixel = [...decoded.data.subarray(offset, offset + 3)];
+              assert.equal(pixel.length, 3);
+              assert.ok(rgb.every((ch, i) => Math.abs(ch - pixel[i]) <= 3), label + ': stale or wrong tab pixel ' + pixel + ' (wanted ' + rgb + ')');
+              console.log('PASS: ' + label + ' correct PNG pixel ' + pixel + ' in ' + ms + ' ms; focus unchanged');
+            }
+            // Paint the first version of A and then replace it while visible.
+            await pa.bringToFront();
+            await checkShot(a.id, 'foreground-original', [218,42,35], true, false);
+            await pa.evaluate(() => {
+              document.documentElement.style.background = 'rgb(40,83,217)';
+              return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            });
+            await checkShot(a.id, 'foreground-current', [40,83,217], true, false);
+            await pb.bringToFront();
+            await checkShot(a.id, 'previously-visible-inactive', [40,83,217], false, true);
+            const cold = await call('tabs.new', { url: base + 'cold', active: false });
+            await until(async () => {
+              const tab = (await getTabs()).find(t => t.id === cold.tabId);
+              assert.equal(tab?.status, 'complete');
+              assert.equal(tab?.active, false);
+            }, 'cold tab failed to load in background');
+            await checkShot(cold.tabId, 'never-selected-inactive', [163,88,191], false, true);
+            assert.equal((await getTabs()).find(t => t.id === b.id)?.active, true);
+          await call('page.navigate', { ...args, url: base + 'next' });
+            await negative('ax.click', { ...args, index: button.index }, /snapshot|stale/i);
+            await call('tabs.release', args);
+            const released = await call('ping');
+            assert.ok(!released.attached.includes(a.id) && !released.claimed.includes(a.id));
+            console.log('PASS: real MV3 + Windows host, stale index refusal and release');
+            await browser.close(); browser = undefined;
+            await until(async () => {
+              const alive = await send('ping').then(r => r.ok, () => false);
+              assert.equal(alive, false, 'pipe is still carrying pings');
+            }, 'old browser connection did not close');
+            await launch('second');
+            assert.deepEqual(counts, { a: ['true'], b: [] }, 'input was replayed');
+            console.log('PASS: new Chrome process and fresh profile reconnect without replay');
+          } finally {
+            try { await browser?.close(); } finally {
+              server.closeAllConnections();
+              await new Promise(yes => server.close(yes));
+              await rm(tmp, { recursive: true, force: true, maxRetries: 4, retryDelay: 300 });
+            }
+          }
+          '@ | Set-Content -Encoding utf8 smoke.mjs
+          node --check smoke.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'smoke script syntax check failed' }
+          node smoke.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Windows smoke failed' }
+      - name: Exercise native Computer Use on two synthetic Windows forms
+        if: ${{ !cancelled() }}
+        shell: powershell
+        run: |
+          if (-not [Environment]::UserInteractive -or (Get-Process -Id $PID).SessionId -eq 0) { throw 'No interactive runner session for desktop smoke' }
+          $lab = (New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP 'dsh-desktop-fixture')).FullName
+          $fixture = Join-Path $lab 'fixture.ps1'
+          @'
+          param([string]$Lab)
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $ErrorActionPreference = 'Stop'
+          function New-Fixture([string]$name, [int]$x, [Drawing.Color]$color) {
+            $form = New-Object Windows.Forms.Form
+            $form.Text = "DSH QA CI Fixture $name"
+            $form.StartPosition = 'Manual'
+            $form.Location = New-Object Drawing.Point($x, 70)
+            $form.ClientSize = New-Object Drawing.Size(300, 210)
+            $form.BackColor = $color
+            $button = New-Object Windows.Forms.Button
+            $button.Text = "Target $name"
+            $button.SetBounds(35, 45, 130, 48)
+            $button.Tag = Join-Path $Lab "$name.clicks"
+            $button.Add_Click({ param($s, $e) [IO.File]::AppendAllText([string]$s.Tag, 'X') })
+            $form.Controls.Add($button)
+            return $form
+          }
+          $a = New-Fixture 'A' 30 ([Drawing.Color]::Orange)
+          $b = New-Fixture 'B' 410 ([Drawing.Color]::Purple)
+          $a.Show()
+          $b.Show()
+          [IO.File]::WriteAllText((Join-Path $Lab 'ready'), 'ready')
+          [Windows.Forms.Application]::Run()
+          '@ | Set-Content -Encoding UTF8 -LiteralPath $fixture
+          $engine = Join-Path $env:GITHUB_WORKSPACE 'dsh-computer-use\tools\cua.ps1'
+          $process = Start-Process -FilePath powershell.exe -ArgumentList @('-NoProfile','-STA','-WindowStyle','Hidden','-File',('"' + $fixture + '"'),('"' + $lab + '"')) -PassThru
+          try {
+            $until = (Get-Date).AddSeconds(12)
+            while (!(Test-Path (Join-Path $lab 'ready')) -and (Get-Date) -lt $until) { Start-Sleep -Milliseconds 200 }
+            if (!(Test-Path (Join-Path $lab 'ready'))) { throw 'GUI fixture did not start' }
+            $a = 'DSH QA CI Fixture A'
+            $cuaArgs = @('-NoProfile','-File',$engine)
+            & powershell.exe @cuaArgs -Action click -Window $a -Client -X 75 -Y 68
+            if ($LASTEXITCODE -ne 0) { throw 'native window-relative click failed' }
+            Start-Sleep -Milliseconds 300
+            if ([IO.File]::ReadAllText((Join-Path $lab 'A.clicks')) -ne 'X' -or (Test-Path (Join-Path $lab 'B.clicks'))) {
+              throw 'wrong or repeated pointer input'
+            }
+            Write-Host 'PASS: native Windows click, one event in A and none in B'
+            Add-Type -AssemblyName System.Drawing
+            $shot = Join-Path $lab 'A-crop.png'
+            & powershell.exe @cuaArgs -Action shot -Window $a -Client -Method screen -X 180 -Y 100 -Width 70 -Height 50 -Path $shot
+            if ($LASTEXITCODE -ne 0 -or !(Test-Path $shot)) { throw 'native fixture crop failed' }
+            $bmp = New-Object Drawing.Bitmap($shot)
+            try {
+              $c = $bmp.GetPixel(35, 25)
+              if ($bmp.Width -ne 70 -or $bmp.Height -ne 50 -or $c.R -lt 240 -or $c.G -lt 140 -or $c.G -gt 190 -or $c.B -gt 20) {
+                throw "wrong fixture pixels or crop size: $c @ $($bmp.Width)x$($bmp.Height)"
+              }
+            } finally { $bmp.Dispose() }
+            Write-Host 'PASS: native 70x50 window-relative crop contains the expected fixture color'
+            $ErrorActionPreference = 'Stop'
+            $oldTemp = $env:TEMP
+            $env:TEMP = $lab
+            Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class QaWin {
+            [StructLayout(LayoutKind.Sequential)] public struct Point { public int X, Y; }
+            [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern IntPtr FindWindow(string cls, string title);
+            public static IntPtr Fixture(string title) { return FindWindow(null, title); }
+            [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
+            [DllImport("user32.dll")] public static extern IntPtr GetDC(IntPtr h);
+            [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr h, IntPtr dc);
+            [DllImport("gdi32.dll")] public static extern bool BitBlt(IntPtr dest, int x, int y, int w, int h, IntPtr src, int sx, int sy, uint op);
+            [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+            [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref Point p);
+            [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int key);
+            [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+          }
+          '@
+            function Measure-FixtureEdge($x, $y) {
+              $frame = New-Object Drawing.Bitmap(12, 30)
+              $graphics = [Drawing.Graphics]::FromImage($frame)
+              try {
+                $dst = $graphics.GetHdc()
+                $src = [QaWin]::GetDC([IntPtr]::Zero)
+                try {
+                  if ($src -eq [IntPtr]::Zero -or ![QaWin]::BitBlt($dst, 0, 0, 12, 30, $src, $x, $y, 0x40CC0020)) {
+                    throw 'independent overlay pixel capture failed'
+                  }
+                } finally {
+                  $graphics.ReleaseHdc($dst)
+                  if ($src -ne [IntPtr]::Zero) { [void][QaWin]::ReleaseDC([IntPtr]::Zero, $src) }
+                }
+                $max = 0
+                for ($col=0; $col -lt 12; $col++) {
+                  for ($row=0; $row -lt 30; $row++) {
+                    $max = [Math]::Max($max, [int]$frame.GetPixel($col, $row).B)
+                  }
+                }
+                return $max
+              } finally { $graphics.Dispose(); $frame.Dispose() }
+            }
+            $visible = [QaWin]::Fixture($a)
+            if ($visible -eq [IntPtr]::Zero) { throw 'fixture HWND not found by exact title' }
+            $nativeDpi = [QaWin]::GetDpiForWindow($visible)
+            $info = (& powershell.exe @cuaArgs -Action info -Window $a | Out-String)
+            if ($LASTEXITCODE -ne 0 -or $nativeDpi -le 0 -or $info -notmatch "(?m)^dpi\s*:\s*$nativeDpi\s*$" -or
+                $info -notmatch '(?m)^dpiAwareness\s*:\s*(?:unaware|system-aware|per-monitor-aware)\s*$') {
+              throw "Target HWND DPI diagnostics failed: $info"
+            }
+            Write-Host "PASS: Computer Use reports $nativeDpi DPI from the exact live fixture HWND; $($Matches[0].Trim()). Single-display only."
+            if ([QaWin]::GetForegroundWindow() -ne $visible) {
+              & powershell.exe @cuaArgs -Action focus -Window $a
+              if ($LASTEXITCODE -ne 0 -or [QaWin]::GetForegroundWindow() -ne $visible) { throw 'fixture is not foreground after explicit focus' }
+            }
+            $origin = New-Object QaWin+Point
+            if (![QaWin]::ClientToScreen($visible, [ref]$origin)) { throw 'cannot read fixture origin' }
+            $edgeX = $origin.X + 1
+            $edgeY = $origin.Y + 125
+            $baseline = Measure-FixtureEdge $edgeX $edgeY
+            if ($baseline -gt 20) { throw "unexpected baseline pixel blue=$baseline" }
+            $overlayScript = Join-Path (Split-Path $engine) 'overlay.ps1'
+            $overlayProcess = Start-Process -FilePath powershell.exe -ArgumentList @('-NoProfile','-STA','-WindowStyle','Hidden','-File',('"' + $overlayScript + '"')) -PassThru
+            try {
+              $actionToken = [Guid]::NewGuid().ToString()
+              $state = [ordered]@{
+                updated = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); ttlMs = 30000
+                stopToken = $actionToken; screen = $false; mode = 'window'
+                target = @{ hwnd = $visible.ToInt64(); rect = @($origin.X, $origin.Y, ($origin.X + 300), ($origin.Y + 210)) }
+                cursor = @{ x = ($origin.X + 205); y = ($origin.Y + 125) }; label = 'QA fixture drag'
+              }
+              [IO.File]::WriteAllText((Join-Path $lab 'dsh-cua-overlay-state.json'), ($state | ConvertTo-Json -Depth 6 -Compress))
+              $until = (Get-Date).AddSeconds(8)
+              $blue = 0
+              while ((Get-Date) -lt $until) {
+                $blue = Measure-FixtureEdge $edgeX $edgeY
+                if ($blue -ge ($baseline + 30)) { break }
+                Start-Sleep -Milliseconds 150
+              }
+              if ($blue -lt ($baseline + 30)) { throw "WPF frame not detected at target edge; baseline=$baseline blue=$blue" }
+              if ([QaWin]::GetForegroundWindow() -ne $visible) { throw 'overlay stole window focus' }
+              Write-Host "PASS: visible blue WPF frame on fixture edge, non-activating; blue=$baseline to $blue"
+              $drag = Start-Process -FilePath powershell.exe -ArgumentList @('-NoProfile','-WindowStyle','Hidden','-File',('"' + $engine + '"'),'-Action','drag','-Window',('"' + $a + '"'),'-Client','-X','205','-Y','125','-X2','260','-Y2','177','-Steps','25','-Delay','120','-StopToken',$actionToken) -RedirectStandardOutput (Join-Path $lab 'drag-out.txt') -RedirectStandardError (Join-Path $lab 'drag-err.txt') -PassThru
+              $until = (Get-Date).AddSeconds(10)
+              while (([QaWin]::GetAsyncKeyState(1) -band 0x8000) -eq 0 -and !$drag.HasExited -and (Get-Date) -lt $until) { Start-Sleep -Milliseconds 25 }
+              if (([QaWin]::GetAsyncKeyState(1) -band 0x8000) -eq 0) { throw 'drag did not physically press its button' }
+              if ([QaWin]::GetForegroundWindow() -ne $visible) { throw 'refusing to send Escape outside fixture' }
+              [QaWin]::keybd_event(27, 0, 0, [UIntPtr]::Zero)
+              try { Start-Sleep -Milliseconds 150 } finally { [QaWin]::keybd_event(27, 0, 2, [UIntPtr]::Zero) }
+              if (!$drag.WaitForExit(8000)) { throw 'worker did not exit after Escape' }
+              if (!(Test-Path (Join-Path $lab "dsh-cua-stop-$actionToken.signal"))) { throw 'WPF daemon did not write the action cancellation signal' }
+              if ((Get-Content -Raw -LiteralPath (Join-Path $lab 'drag-err.txt')) -notmatch 'STOPPED: user requested cancellation') { throw 'worker did not report cancellation' }
+              if (([QaWin]::GetAsyncKeyState(1) -band 0x8000) -ne 0) { throw 'mouse button is still down after Escape' }
+              $until = (Get-Date).AddSeconds(3)
+              while ((Measure-FixtureEdge $edgeX $edgeY) -ge ($baseline + 30) -and (Get-Date) -lt $until) { Start-Sleep -Milliseconds 100 }
+              if ((Measure-FixtureEdge $edgeX $edgeY) -ge ($baseline + 30)) { throw 'overlay did not disappear after Escape' }
+              Write-Host 'PASS: live Escape path during drag, button released, blue frame cleared'
+            } finally {
+              if ($drag -and !$drag.HasExited) {
+                [IO.File]::WriteAllText((Join-Path $lab "dsh-cua-stop-$actionToken.signal"), '')
+                [void]$drag.WaitForExit(4000)
+              }
+              if (!$overlayProcess.HasExited) { Stop-Process -Id $overlayProcess.Id }
+              $env:TEMP = $oldTemp
+            }
+          } finally {
+            if (!$process.HasExited) { Stop-Process -Id $process.Id }
+          }

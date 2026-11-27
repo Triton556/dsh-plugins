@@ -11,25 +11,34 @@ import { join } from 'node:path';
 export const inject = [];
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
-const BRIDGE = join(HERE, '..', 'bridge.mjs');
+const BRIDGE = join(HERE, 'bridge.mjs');
 
 function runBridge(request, timeoutMs = 60000) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [BRIDGE], { windowsHide: true });
-    let stdout = '';
-    let stderr = '';
-    const timer = setTimeout(() => { try { child.kill(); } catch {} }, timeoutMs);
-    child.stdout.on('data', (chunk) => { stdout += chunk.toString('utf8'); });
-    child.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
+    const stdout = [];
+    const stderr = [];
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, timeoutMs);
+    child.stdout.on('data', (chunk) => stdout.push(chunk));
+    child.stderr.on('data', (chunk) => stderr.push(chunk));
     child.on('error', (error) => {
       clearTimeout(timer);
       resolve({ ok: false, text: 'bridge spawn failed: ' + error.message });
     });
+    // Early child exit may close stdin before the request is written. Report the
+    // child result rather than crashing the DSH host with an unhandled EPIPE.
+    child.stdin.on('error', () => {});
     child.on('close', (code) => {
       clearTimeout(timer);
-      const text = (stdout || stderr).trim();
-      if (code === 0) resolve({ ok: true, text });
-      else resolve({ ok: false, text: text.slice(0, 4000) || 'exit ' + code });
+      const out = Buffer.concat(stdout).toString('utf8').trim();
+      const err = Buffer.concat(stderr).toString('utf8').trim();
+      if (timedOut) resolve({ ok: false, text: 'Browser bridge timed out.' });
+      else if (code === 0) resolve({ ok: true, text: out || err });
+      else resolve({ ok: false, text: (out || err || `bridge exited (${code})`).slice(0, 4000) });
     });
     child.stdin.end(JSON.stringify(request));
   });
@@ -100,7 +109,7 @@ export const TOOLS = [
 function pick(args) {
   const out = {};
   for (const [key, value] of Object.entries(args || {})) {
-    if (value === undefined || value === null || value === '') continue;
+    if (value === undefined || value === null || (value === '' && key !== 'value')) continue;
     out[key] = value;
   }
   return out;

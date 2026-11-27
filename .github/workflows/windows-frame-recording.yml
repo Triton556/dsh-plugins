@@ -1,0 +1,74 @@
+name: Windows Computer Use frame recording
+on:
+  push:
+    branches: ['qa/windows-frame-recording-2026-11-27', 'qa/plugin-reliability-2026-11-26']
+    paths: ['.github/workflows/windows-frame-recording.yml', 'dsh-computer-use/tools/cua.ps1']
+permissions: {}
+jobs:
+  frame-recording:
+    if: github.repository == 'Triton556/dsh-plugins'
+    runs-on: windows-2025
+    timeout-minutes: 8
+    steps:
+      - name: Check out exact public QA revision
+        shell: pwsh
+        run: |
+          git init .
+          if ($LASTEXITCODE -ne 0) { throw 'git init failed' }
+          git fetch --depth 1 https://github.com/Triton556/dsh-plugins.git $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { throw 'git fetch failed' }
+          git checkout --detach FETCH_HEAD
+          if ($LASTEXITCODE -ne 0 -or (git rev-parse HEAD) -ne $env:GITHUB_SHA) { throw 'wrong checkout' }
+          pwsh -NoProfile -File dsh-computer-use/tools/input-contract.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Pointer indicator contracts failed' }
+      - name: Record production wrapper, native engine and WPF timing
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not [Environment]::UserInteractive -or (Get-Process -Id $PID).SessionId -eq 0) { throw 'No interactive Windows desktop' }
+          $lab = (New-Item -ItemType Directory (Join-Path $env:RUNNER_TEMP 'window-frame-proof')).FullName
+          $sandboxTmp=(New-Item -ItemType Directory (Join-Path $lab 'native-temp')).FullName
+          $env:TEMP=$sandboxTmp
+          $env:TMP=$sandboxTmp
+          $env:WFR_LAB=$lab
+          $fixture=Join-Path $env:GITHUB_WORKSPACE 'docs/qa/overlay-timing-fixture.ps1'
+          $runner=Join-Path $env:GITHUB_WORKSPACE 'docs/qa/overlay-timing-runner.mjs'
+          $fixtureProcess=Start-Process powershell.exe -ArgumentList @('-NoProfile','-STA','-WindowStyle','Hidden','-File',('"' + $fixture + '"'),('"' + $lab + '"')) -PassThru
+          try {
+            $until=(Get-Date).AddSeconds(15)
+            while (!(Test-Path (Join-Path $lab 'ready')) -and !$fixtureProcess.HasExited -and (Get-Date) -lt $until) { Start-Sleep -Milliseconds 150 }
+            if (!(Test-Path (Join-Path $lab 'ready'))) { throw 'Fixture did not start' }
+            node $runner
+            if (Test-Path (Join-Path $lab 'sampler-error.txt')) {
+              Get-Content (Join-Path $lab 'sampler-error.txt')
+              throw 'Sampler failed'
+            }
+            if ($LASTEXITCODE -ne 0) {
+              Get-Content (Join-Path $lab 'actions.json')
+              $nativeLog=Join-Path $sandboxTmp 'dsh-cua-overlay.log'
+              if(Test-Path $nativeLog){Get-Content $nativeLog}
+              $inputLog=Join-Path $lab 'input.csv'
+              if(Test-Path $inputLog){Get-Content $inputLog}
+              throw 'Tool flow failed'
+            }
+          } finally {
+            if(!$fixtureProcess.HasExited){Stop-Process -Id $fixtureProcess.Id}
+            $overlayPidPath=Join-Path $sandboxTmp 'dsh-cua-overlay.pid'
+            if(Test-Path $overlayPidPath){
+              $overlayPid=0
+              if([int]::TryParse((Get-Content -Raw $overlayPidPath).Trim(),[ref]$overlayPid)) {
+                Stop-Process -Id $overlayPid -ErrorAction SilentlyContinue
+              }
+            }
+          }
+      - name: Upload bounded synthetic fixture evidence
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-cua-frame-timing
+          path: |
+            ${{ runner.temp }}/window-frame-proof/frames/*.png
+            ${{ runner.temp }}/window-frame-proof/input.csv
+            ${{ runner.temp }}/window-frame-proof/samples.csv
+            ${{ runner.temp }}/window-frame-proof/actions.json
+          retention-days: 14
