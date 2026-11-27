@@ -11,6 +11,9 @@ const HOST_NAME = 'com.dsh.browser';
 const CDP_VERSION = '1.3';
 const DETACH_IDLE_MS = 20000;
 const SNAPSHOT_TTL_MS = 60000;
+const SHOT_BACKGROUND_MS = 2000;
+const SHOT_ACTIVE_MS = 6000;
+const SHOT_SETUP_MS = 1500;
 
 let port = null;
 let retryTimer = null;
@@ -20,6 +23,7 @@ const detachTimers = new Map();
 const claims = new Map();      // tabId -> { title, url, at }
 const snapshots = new Map();   // tabId -> { at, nodes }
 const snapshotReads = new Map(); // tabId -> identity of the current read
+const shotReads = new Map();     // tabId -> identity of the current capture
 
 function invalidateSnapshot(tabId) {
   snapshots.delete(tabId);
@@ -153,9 +157,11 @@ chrome.debugger.onDetach.addListener((source) => {
 });
 chrome.tabs.onUpdated.addListener((tabId, change) => {
   if (change.status === 'loading' || change.url !== undefined) invalidateSnapshot(tabId);
+  if (change.status === 'loading' || change.url !== undefined || change.discarded === true) shotReads.delete(tabId);
 });
 chrome.tabs.onRemoved.addListener((tabId) => {
   attached.delete(tabId); cancelDetach(tabId); claims.delete(tabId); invalidateSnapshot(tabId);
+  shotReads.delete(tabId);
 });
 
 async function pickTab(args) {
@@ -268,6 +274,51 @@ function assertPage(url) {
   if (!url) return;
   if (/^(chrome|edge|about|devtools|chrome-extension|edge-extension):/i.test(url)) {
     throw new Error('internal pages are not drivable: ' + url);
+  }
+}
+
+async function shotDocument(tabId) {
+  const { frameTree } = await withTimeout(cdpRaw(tabId, 'Page.getFrameTree'), SHOT_SETUP_MS, 'identify screenshot document');
+  const frame = frameTree?.frame;
+  if (!frame?.id || !frame.loaderId || !frame.url) throw new Error('Cannot identify the screenshot document; retry after it has loaded.');
+  assertPage(frame.url);
+  return JSON.stringify([frame.id, frame.loaderId, frame.url, frame.urlFragment || '']);
+}
+
+async function pageShot(tabId, args) {
+  const capture = {};
+  shotReads.set(tabId, capture);
+  const assertCurrent = () => {
+    if (shotReads.get(tabId) !== capture) throw new Error('Browser page changed or the capture was superseded; take a new screenshot.');
+  };
+  try {
+    const tab = await tabsGet(tabId);
+    assertPage(tab.url);
+    if (tab.discarded) throw new Error('Chrome unloaded the selected tab. Select the intended tab in Chrome and retry.');
+    if (tab.status !== 'complete' || tab.pendingUrl) throw new Error('The selected tab is still loading; retry when it finishes.');
+    await withTimeout(attach(tabId), SHOT_SETUP_MS, 'attach for screenshot');
+    const before = await shotDocument(tabId);
+    assertCurrent();
+    const format = args.format === 'jpeg' ? 'jpeg' : 'png';
+    const deadline = tab.active ? SHOT_ACTIVE_MS : SHOT_BACKGROUND_MS;
+    let shot;
+    try {
+      shot = await withTimeout(cdpRaw(tabId, 'Page.captureScreenshot', {
+        format, quality: format === 'jpeg' ? Number(args.quality) || 80 : undefined, captureBeyondViewport: false,
+      }), deadline, 'Page.captureScreenshot');
+    } catch (error) {
+      assertCurrent();
+      if (error?.message !== 'timeout after ' + deadline + 'ms: Page.captureScreenshot') throw error;
+      throw new Error('Chrome did not produce a screenshot in ' + (deadline / 1000) +
+        ' seconds. Select the intended tab in Chrome and retry. No tab was activated by the bridge.');
+    }
+    const after = await shotDocument(tabId);
+    assertCurrent();
+    if (before !== after) throw new Error('Browser page changed during capture; take a new screenshot.');
+    if (typeof shot?.data !== 'string' || !shot.data) throw new Error('Chrome returned an empty screenshot; retry when the page is visible.');
+    return { tabId, format, data: shot.data };
+  } finally {
+    if (shotReads.get(tabId) === capture) shotReads.delete(tabId);
   }
 }
 
@@ -503,16 +554,7 @@ async function run(cmd, args) {
     }
 
     case 'page.shot': {
-      const tabId = await pickTab(args);
-      const tab = await tabsGet(tabId);
-      assertPage(tab.url);
-      await ensureLoaded(tabId, args);
-      await attach(tabId);
-      const format = args.format === 'jpeg' ? 'jpeg' : 'png';
-      const shot = await cdp(tabId, 'Page.captureScreenshot', {
-        format, quality: format === 'jpeg' ? Number(args.quality) || 80 : undefined, captureBeyondViewport: false,
-      });
-      return { tabId, format, data: shot.data };
+      return pageShot(await pickTab(args), args);
     }
 
     case 'page.wait': {
