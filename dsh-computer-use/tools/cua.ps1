@@ -622,7 +622,29 @@ function Write-OverlayGeometry([System.IntPtr]$handle, $point = $null) {
   if (-not $Overlay -or $handle -eq [System.IntPtr]::Zero) { return }
   $rect = Get-VisibleRect $handle
   $pos = if ($null -ne $point) { " click=$($point.X),$($point.Y)" } else { '' }
-  "[overlay] hwnd=$($handle.ToInt64()) rect=$($rect.Left),$($rect.Top),$($rect.Right),$($rect.Bottom)$pos"
+  # The Node wrapper must see geometry before this worker waits for paint.
+  [Console]::Out.WriteLine("[overlay] hwnd=$($handle.ToInt64()) rect=$($rect.Left),$($rect.Top),$($rect.Right),$($rect.Bottom)$pos")
+  [Console]::Out.Flush()
+}
+
+function Wait-PointerIndicator([System.IntPtr]$handle) {
+  if (-not $Overlay -or -not $StopToken) { return }
+  $receipt = Join-Path $env:TEMP "dsh-cua-painted-$StopToken.signal"
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  $expected = [string]$handle.ToInt64()
+  do {
+    Assert-ActionActive
+    Assert-Foreground $handle
+    $actual = $null
+    if ([IO.File]::Exists($receipt)) {
+      try { $actual = [IO.File]::ReadAllText($receipt) } catch {}
+    }
+    if ($actual -ceq $expected) { return }
+    if ($clock.ElapsedMilliseconds -ge 1500) {
+      throw 'OVERLAY_NOT_READY: the blue indicator could not be confirmed before input; no click or drag was sent.'
+    }
+    Start-Sleep -Milliseconds 15
+  } while ($true)
 }
 
 Assert-ActionActive
@@ -663,7 +685,7 @@ switch ($Action) {
       }
     }
     if (-not $running) {
-      Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',("`"${Script}`"")) -WindowStyle Hidden | Out-Null
+      Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-STA','-ExecutionPolicy','Bypass','-File',("`"${Script}`"")) -WindowStyle Hidden | Out-Null
       Start-Sleep -Milliseconds 250
     }
     "overlay: " + $(if ($running) { 'already running' } else { 'started' })
@@ -858,9 +880,10 @@ switch ($Action) {
     Assert-Foreground $h
     $pt = Convert-Point $h $X $Y
     Assert-PointerTarget $h $pt.X $pt.Y
+    Write-OverlayGeometry $h $pt
+    Wait-PointerIndicator $h
     Move-To $pt.X $pt.Y
     Assert-PointerTarget $h $pt.X $pt.Y
-    Write-OverlayGeometry $h $pt
     $down = if ($Right) { [Cua.Native]::RBUTTONDOWN } else { [Cua.Native]::LBUTTONDOWN }
     $up = if ($Right) { [Cua.Native]::RBUTTONUP } else { [Cua.Native]::LBUTTONUP }
     Invoke-MousePress $down $up { Wait-ActionDelay 40 }
@@ -878,9 +901,10 @@ switch ($Action) {
     $b = Convert-Point $h $X2 $Y2
     Assert-PointerTarget $h $a.X $a.Y
     Assert-PointerTarget $h $b.X $b.Y
+    Write-OverlayGeometry $h $a
+    Wait-PointerIndicator $h
     Move-To $a.X $a.Y
     Assert-PointerTarget $h $a.X $a.Y
-    Write-OverlayGeometry $h $a
     Invoke-MousePress ([Cua.Native]::LBUTTONDOWN) ([Cua.Native]::LBUTTONUP) {
       Wait-ActionDelay 60
       for ($i = 1; $i -le $Steps; $i++) {

@@ -71,6 +71,8 @@ async function attachImage(ctx, filePath) {
 const OVERLAY_SCRIPT = new URL('./tools/overlay.ps1', import.meta.url);
 const OVERLAY_STATE = join(tmpdir(), 'dsh-cua-overlay-state.json');
 const OVERLAY_PID = join(tmpdir(), 'dsh-cua-overlay.pid');
+const OVERLAY_READY = join(tmpdir(), 'dsh-cua-overlay.ready');
+const OVERLAY_STARTUP_MS = 4500;
 const OVERLAY_TTL_MS = 90000;
 const OVERLAY_LINGER_MS = 700;
 const DOTNET_UNIX_EPOCH_TICKS = 621355968000000000n;
@@ -84,17 +86,18 @@ function overlayAlive() {
     const pid = Number(readFileSync(OVERLAY_PID, 'utf8').trim());
     if (!Number.isFinite(pid) || pid <= 0) return false;
     process.kill(pid, 0);
+    if (Number(readFileSync(OVERLAY_READY, 'utf8').trim()) !== pid) return false;
     // A daemon started from older overlay.ps1 keeps its old behaviour (ESC
     // coverage, kill filter). Compare the stamped build with the script mtime
     // and ask the launcher to verify its identity before replacing it.
     try {
       const stamp = readFileSync(OVERLAY_BUILD, 'utf8').trim();
-      if (!/^\d+$/.test(stamp)) return true;
+      if (!/^\d+$/.test(stamp)) return false;
       const stamped = Number((BigInt(stamp) - DOTNET_UNIX_EPOCH_TICKS) / 10000n);
       const current = statSync(fileURLToPath(OVERLAY_SCRIPT)).mtimeMs;
       if (Math.abs(stamped - current) > 5) return false;
     } catch (error) {
-      return true;
+      return false;
     }
     return true;
   } catch (error) {
@@ -104,14 +107,22 @@ function overlayAlive() {
 
 let overlayStarting;
 function ensureOverlay() {
-  if (overlayAlive()) return Promise.resolve();
+  if (overlayAlive()) return Promise.resolve(true);
   overlayStarting ??= (async () => {
+    const deadline = Date.now() + OVERLAY_STARTUP_MS;
     try {
       const { engine } = await import('./tools/engine.mjs');
-      await engine({ action: 'overlay', Script: fileURLToPath(OVERLAY_SCRIPT) });
+      await engine({ action: 'overlay', Script: fileURLToPath(OVERLAY_SCRIPT) }, { timeoutMs: 2500 });
     } catch (error) {
       console.warn('[dsh-computer-use] overlay start failed:', String(error && error.message || error).slice(0, 160));
     }
+    // Launcher exit means Start-Process returned, not that the WPF dispatcher
+    // can paint. Startup gets its own deadline, not the pointer's paint budget.
+    do {
+      if (overlayAlive()) return true;
+      await new Promise((resolve) => setTimeout(resolve, 45));
+    } while (Date.now() < deadline);
+    return false;
   })().finally(() => { overlayStarting = undefined; });
   return overlayStarting;
 }
@@ -611,7 +622,10 @@ export function apply(ctx, config = {}) {
               try {
                 if (ownsOverlay()) {
                   pushOverlay(0, '', screenWide ? point : '', screenWide ? caption : '', screenWide ? 'screen' : 'window', OVERLAY_TTL_MS, stopToken);
-                  await ensureOverlay();
+                  const ready = await ensureOverlay();
+                  if (!ready && (spec.name === 'computer_click' || spec.name === 'computer_drag')) {
+                    return { ok: false, text: 'OVERLAY_NOT_READY: the indicator did not start; no click or drag was sent.' };
+                  }
                 }
                 result = await engine(engineArgs, {
                   onLine: (line) => {
@@ -629,7 +643,9 @@ export function apply(ctx, config = {}) {
                     // Clear the warning even when the engine fails or was stopped.
                     pushOverlay(0, '', '', '', 'window', 0);
                   }
-                  try { unlinkSync(join(process.env.TEMP || tmpdir(), `dsh-cua-stop-${stopToken}.signal`)); } catch {}
+                  for (const signal of ['stop', 'painted']) {
+                    try { unlinkSync(join(process.env.TEMP || tmpdir(), `dsh-cua-${signal}-${stopToken}.signal`)); } catch {}
+                  }
                   activeInputToken = undefined;
                 }
               }
