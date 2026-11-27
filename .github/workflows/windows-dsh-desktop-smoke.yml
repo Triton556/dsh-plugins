@@ -41,6 +41,7 @@ jobs:
           if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '(?i)(?:^|,\s*)(?:O|CN)=[^,]*DeepSeek') {
             throw 'Did not execute: official installer signature or publisher did not match'
           }
+          if ($hash -ne '6482E4CAB56C389C9DFA643A8E1DBC8C051D8E73944C6FCA4A649234DE4A5A2D') { throw 'The verified Desktop installer changed; review the new version before executing' }
           if ($target -match '\s') { throw 'The NSIS test install path must have no whitespace' }
           $setup = Start-Process -FilePath $installer -ArgumentList @('/S',"/D=$target") -PassThru
           if (!$setup.WaitForExit(180000)) { throw 'Vendor installer did not finish in three minutes' }
@@ -68,7 +69,7 @@ jobs:
             @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe })
           }
           function Launch-Desktop([string]$label) {
-            $app = Start-Process -FilePath $exe -ArgumentList @('--lang=en-US','--disable-background-networking','--no-first-run') -WorkingDirectory $lab -PassThru
+            $app = Start-Process -FilePath $exe -ArgumentList @('--lang=en-US','--disable-background-networking','--no-first-run','--force-renderer-accessibility') -WorkingDirectory $lab -PassThru
             $visible = Wait-For {
               Get-DesktopProcesses | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
             } "No visible Desktop window during $label"
@@ -117,9 +118,48 @@ jobs:
               Write-Host "PASS: exact QA bundle present in packaged profile: $stem ($((Get-FileHash -Algorithm SHA256 $archive).Hash))"
             }
             $window = Launch-Desktop 'second launch, three QA bundles'
-            $uia = [Windows.Automation.AutomationElement]::FromHandle($window.MainWindowHandle)
-            $elements = $uia.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
-            $markers = @($elements | ForEach-Object { $_.Current.Name } | Where-Object { $_ -match '^(DeepSeek Harness|Sign in|Log in|Create a session|New session|Settings|Plugins|Artifacts|Workspace files|Start a conversation|登录|新建会话|设置|插件)$' } | Sort-Object -Unique)
-            Write-Host "Safe shell markers: $($markers -join ', ')"
-            Write-Host 'Scope: installation, packaged profile registration and visible shell only, not tool invocation or Artifact Panes acceptance.'
+            function Find-VisibleDesktopControl([string]$pattern) {
+              foreach ($proc in @(Get-DesktopProcesses)) {
+                if ($proc.MainWindowHandle -eq 0) { continue }
+                try {
+                  $root = [Windows.Automation.AutomationElement]::FromHandle($proc.MainWindowHandle)
+                  $items = $root.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
+                  foreach ($item in $items) {
+                    if ($item.Current.Name -match $pattern -and !$item.Current.IsOffscreen -and $item.Current.IsEnabled) {
+                      return $item
+                    }
+                  }
+                } catch [Windows.Automation.ElementNotAvailableException] {}
+              }
+            }
+            function Invoke-DesktopControl($control) {
+              $invoke = $null
+              if (!$control.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$invoke)) {
+                throw "Expected an actionable onboarding control: $($control.Current.Name)"
+              }
+              $label = $control.Current.Name
+              ([Windows.Automation.InvokePattern]$invoke).Invoke()
+              Write-Host "Invoked built-in Desktop control: $label"
+            }
+            $keyOption = Wait-For {
+              Find-VisibleDesktopControl '^(?:Use|Enter|Set up|Sign in with|Continue with)(?: an?| your| a DeepSeek)? API Key$'
+            } 'Official Desktop did not expose the documented API key option' 35
+            Invoke-DesktopControl $keyOption
+            $later = Wait-For {
+              Find-VisibleDesktopControl '^(?:Set up later|Skip for now|Do this later)$'
+            } 'No documented set-up-later control; no key or account was entered' 20
+            Invoke-DesktopControl $later
+            $workspace = Wait-For {
+              Find-VisibleDesktopControl '^(?:New chat|New session|Create a session|Workspace files|Start a conversation|New conversation|Plugins|Artifacts|新建会话)$'
+            } 'Set up later did not expose a workspace marker on the signed build' 45
+            Write-Host "PASS: reached the signed Desktop workspace without credentials: $($workspace.Current.Name)"
+            $maybePlugin = Find-VisibleDesktopControl '^Plugins$'
+            if ($maybePlugin) {
+              Invoke-DesktopControl $maybePlugin
+              $listed = Wait-For {
+                Find-VisibleDesktopControl '^(?:dsh-artifact-panes|dsh-browser-bridge|dsh-computer-use|Artifact Panes|Computer Use|DSH Browser Bridge)$'
+              } 'Desktop Plugins is visible but QA bundle names were not found' 15
+              Write-Host "PASS: at least one installed QA bundle is visible in the application UI: $($listed.Current.Name)"
+            }
+            Write-Host 'Scope: signed Desktop workspace entry and packaged profile only; no model call, Artifact Panes capture or installed DSH tool dispatch was asserted.'
           } finally { Stop-TestDesktop }
