@@ -7,6 +7,7 @@ on:
       - 'dsh-computer-use/**'
       - 'docs/qa/overlay-timing-*.mjs'
       - 'docs/qa/overlay-timing-*.ps1'
+      - 'docs/qa/cua-matrix*'
 permissions: {}
 jobs:
   frame-recording:
@@ -120,3 +121,83 @@ jobs:
             if (!$proc.HasExited) { Stop-Process -Id $proc.Id }
             if (Test-Path (Join-Path $lab 'provider-result.json')) { Get-Content (Join-Path $lab 'provider-result.json') }
           }
+
+  native-matrix:
+    strategy:
+      fail-fast: false
+      matrix:
+        window: [1, 2, 3]
+    if: github.repository == 'Triton556/dsh-plugins' && github.ref_name == 'qa/computer-use-action-receipts-2026-11-28'
+    runs-on: windows-2025
+    timeout-minutes: 8
+    steps:
+      - name: Check out exact public QA revision
+        shell: pwsh
+        run: |
+          git init .
+          if ($LASTEXITCODE -ne 0) { throw 'git init failed' }
+          git fetch --depth 1 https://github.com/Triton556/dsh-plugins.git $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { throw 'git fetch failed' }
+          git checkout --detach FETCH_HEAD
+          if ($LASTEXITCODE -ne 0 -or (git rev-parse HEAD) -ne $env:GITHUB_SHA) { throw 'wrong checkout' }
+          node --test dsh-computer-use/tools/frame-receipt.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Frame receipt contracts failed' }
+          pwsh -NoProfile -File dsh-computer-use/tools/input-contract.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Pointer indicator contracts failed' }
+      - name: Record production wrapper, native engine and WPF timing
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+          if (-not [Environment]::UserInteractive -or (Get-Process -Id $PID).SessionId -eq 0) { throw 'No interactive Windows desktop' }
+          $lab = (New-Item -ItemType Directory (Join-Path $env:RUNNER_TEMP 'window-frame-proof')).FullName
+          $sandboxTmp=(New-Item -ItemType Directory (Join-Path $lab 'native-temp')).FullName
+          $env:TEMP=$sandboxTmp
+          $env:TMP=$sandboxTmp
+          $env:WFR_LAB=$lab
+          $variant=${{ matrix.window }}
+          $fixture=Join-Path $env:GITHUB_WORKSPACE 'docs/qa/cua-matrix-fixture.ps1'
+          $runner=Join-Path $env:GITHUB_WORKSPACE 'docs/qa/cua-matrix.mjs'
+          $fixtureProcess=Start-Process powershell.exe -ArgumentList @('-NoProfile','-STA','-WindowStyle','Hidden','-File',('"' + $fixture + '"'),('"' + $lab + '"'),$variant) -PassThru
+          try {
+            $until=(Get-Date).AddSeconds(15)
+            while (!(Test-Path (Join-Path $lab 'ready')) -and !$fixtureProcess.HasExited -and (Get-Date) -lt $until) { Start-Sleep -Milliseconds 150 }
+            if (!(Test-Path (Join-Path $lab 'ready'))) { throw 'Fixture did not start' }
+            node $runner
+            $nodeExit = $LASTEXITCODE
+            if (Test-Path (Join-Path $lab 'sampler-error.txt')) {
+              Get-Content (Join-Path $lab 'sampler-error.txt')
+              throw 'Sampler failed'
+            }
+            if ($nodeExit -ne 0) {
+              Get-Content (Join-Path $lab 'matrix.json')
+              $nativeLog=Join-Path $sandboxTmp 'dsh-cua-overlay.log'
+              if(Test-Path $nativeLog){Get-Content $nativeLog}
+              $inputLog=Join-Path $lab 'input.csv'
+              if(Test-Path $inputLog){Get-Content $inputLog}
+              throw 'Tool flow failed'
+            }
+          } finally {
+            if(!$fixtureProcess.HasExited){Stop-Process -Id $fixtureProcess.Id}
+            $overlayPidPath=Join-Path $sandboxTmp 'dsh-cua-overlay.pid'
+            if(Test-Path $overlayPidPath){
+              $overlayPid=0
+              if([int]::TryParse((Get-Content -Raw $overlayPidPath).Trim(),[ref]$overlayPid)) {
+                Stop-Process -Id $overlayPid -ErrorAction SilentlyContinue
+              }
+            }
+          }
+      - name: Upload every frame and fixture log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: cua-matrix-${{ matrix.window }}
+          path: |
+            ${{ runner.temp }}/window-frame-proof/frames/*.png
+            ${{ runner.temp }}/window-frame-proof/*.csv
+            ${{ runner.temp }}/window-frame-proof/*.json
+            ${{ runner.temp }}/window-frame-proof/*.png
+            ${{ runner.temp }}/window-frame-proof/*.mp4
+            ${{ runner.temp }}/window-frame-proof/native-temp/dsh-cua-overlay.log
+          retention-days: 14
+          if-no-files-found: warn
