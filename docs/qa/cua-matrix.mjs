@@ -86,16 +86,24 @@ let browserTarget, testBrowserPid;
 const browserCall=(n,args)=>call(n,{...args,window:browserTarget});
 await test('launch',async()=>{
  assert.ok(chrome,'Chrome executable not installed on this test VM');
- const args=['--user-data-dir="'+filename('test-browser')+'"','--no-first-run','--disable-background-networking','--new-window',pathToFileURL(tabA).href,pathToFileURL(tabB).href].join(' ');
- const r=await call('launch',{path:chrome,args,timeout:8000});
+ const args=['--user-data-dir="'+filename('test-browser')+'"','--no-first-run','--no-default-browser-check','--disable-background-networking','--new-window',pathToFileURL(tabA).href,pathToFileURL(tabB).href].join(' ');
+ const r=await call('launch',{path:chrome,args,timeout:15000});
  ok(r);
  testBrowserPid=+(r.text.match(/launched pid=(\d+)/)?.[1]||0);
  assert.ok(testBrowserPid);
- const matcher=await call('windows');
- browserTarget=matcher.text.includes(labelB)?labelB:matcher.text.includes(labelA)?labelA:undefined;
- assert.ok(browserTarget,matcher.text);
+ // A new browser may report a bootstrap window, or still be loading its
+ // local pages. Poll observations only; never launch again on timeout.
+ const limit=Date.now()+15000, states=[];
+ do {
+  const matcher=await call('windows');ok(matcher);
+  browserTarget=matcher.text.includes(labelB)?labelB:matcher.text.includes(labelA)?labelA:undefined;
+  states.push({at:Date.now(),ready:!!browserTarget,chromeLines:matcher.text.split(/\r?\n/).filter(t=>t.includes('chrome'))});
+  if(!browserTarget) await sleep(400);
+ } while(!browserTarget && Date.now()<limit);
+ writeFileSync(filename('browser-readiness.json'),JSON.stringify({launch:r,states},null,2));
+ assert.ok(browserTarget,'Chrome fixture did not expose a named window: '+r.text);
  return r;
-},r=>assert.match(r.text,/launched pid=\d+ hwnd=\d+/));
+},r=>assert.match(r.text,/launched pid=\d+/));
 await test('browser-tabs',async()=>{assert.ok(browserTarget);return browserCall('tabs',{});},r=>{ok(r);assert.ok(r.text.includes(labelA)&&r.text.includes(labelB),r.text);});
 await test('browser-tab-switch',async()=>{
  assert.ok(browserTarget);
