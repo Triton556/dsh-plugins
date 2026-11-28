@@ -82,3 +82,41 @@ jobs:
             ${{ runner.temp }}/window-frame-proof/before-move.png
             ${{ runner.temp }}/window-frame-proof/after-move.png
           retention-days: 14
+
+  alternative-driver-sample:
+    if: github.repository == 'Triton556/dsh-plugins' && github.ref_name == 'qa/computer-use-action-receipts-2026-11-28'
+    runs-on: windows-2025
+    timeout-minutes: 6
+    steps:
+      - name: Check out exact QA revision and run pinned Cua Driver MCP smoke
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not [Environment]::UserInteractive -or (Get-Process -Id $PID).SessionId -eq 0) { throw 'No interactive Windows desktop' }
+          git init .
+          if ($LASTEXITCODE -ne 0) { throw 'git init failed' }
+          git fetch --depth 1 https://github.com/Triton556/dsh-plugins.git $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { throw 'git fetch failed' }
+          git checkout --detach FETCH_HEAD
+          if ($LASTEXITCODE -ne 0 -or (git rev-parse HEAD) -ne $env:GITHUB_SHA) { throw 'wrong checkout' }
+          $lab = (New-Item -ItemType Directory (Join-Path $env:RUNNER_TEMP 'provider-ab')).FullName
+          $zip = Join-Path $lab 'driver.zip'
+          $url = 'https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.28.0/cua-driver-rs-0.28.0-windows-x86_64-binary.zip'
+          Invoke-WebRequest -Uri $url -OutFile $zip -TimeoutSec 50
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne '9db2096df8d80da4e73ffb797947dcdfab2a362faddd9d1b77682c77aace5aa9') { throw 'unexpected driver checksum' }
+          Expand-Archive $zip -DestinationPath (Join-Path $lab 'bin')
+          $driver = @(Get-ChildItem (Join-Path $lab 'bin') -Filter cua-driver.exe -Recurse)
+          if ($driver.Count -ne 1) { throw 'ambiguous driver binary' }
+          $fixture=Join-Path $env:GITHUB_WORKSPACE 'docs/qa/cua-provider-ab-fixture.ps1'
+          $source=Join-Path $env:GITHUB_WORKSPACE 'docs/qa/cua-provider-ab.mjs'
+          $proc=Start-Process powershell.exe -ArgumentList @('-NoProfile','-STA','-WindowStyle','Hidden','-File',('"' + $fixture + '"'),('"' + $lab + '"')) -PassThru
+          try {
+            $until=(Get-Date).AddSeconds(15)
+            while (!(Test-Path (Join-Path $lab 'focus.csv')) -and !$proc.HasExited -and (Get-Date) -lt $until) { Start-Sleep -Milliseconds 100 }
+            if (!(Test-Path (Join-Path $lab 'focus.csv'))) { throw 'fixture did not start' }
+            node $source $driver[0].FullName $lab
+            if ($LASTEXITCODE -ne 0) { throw 'provider smoke failed' }
+          } finally {
+            if (!$proc.HasExited) { Stop-Process -Id $proc.Id }
+            if (Test-Path (Join-Path $lab 'provider-result.json')) { Get-Content (Join-Path $lab 'provider-result.json') }
+          }
