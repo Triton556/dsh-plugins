@@ -127,6 +127,7 @@ jobs:
       fail-fast: false
       matrix:
         window: [1, 2, 3]
+        repeat: [1, 2, 3]
     if: github.repository == 'Triton556/dsh-plugins' && github.ref_name == 'qa/computer-use-action-receipts-2026-11-28'
     runs-on: windows-2025
     timeout-minutes: 8
@@ -201,7 +202,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: cua-matrix-${{ matrix.window }}
+          name: cua-matrix-${{ matrix.window }}-r${{ matrix.repeat }}
           path: |
             ${{ runner.temp }}/window-frame-proof/frames/*.png
             ${{ runner.temp }}/window-frame-proof/*.csv
