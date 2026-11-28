@@ -1,6 +1,6 @@
 param([string]$Lab, [int]$Variant)
 $ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing, PresentationFramework, WindowsFormsIntegration
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
@@ -45,6 +45,14 @@ $edit.AccessibleName='QA Text Entry'
 $edit.Add_TextChanged({param($sender,$e) [IO.File]::WriteAllText((Join-Path $Lab 'typed.txt'),$sender.Text); Log-Input 'text-changed' 0 0})
 $edit.Add_KeyDown({param($sender,$e) if($e.KeyCode -eq [Windows.Forms.Keys]::Home){Log-Input 'key-home' 0 0}})
 $a.Controls.Add($edit)
+$script:hosted=New-Object Windows.Forms.Integration.ElementHost
+$hosted.SetBounds(208,10,108,28)
+$script:uiButton=New-Object Windows.Controls.Button
+$uiButton.Content='QA Invoke'
+[Windows.Automation.AutomationProperties]::SetName($uiButton,'QA Invoke')
+$uiButton.Add_Click({Log-Input 'wpf-invoke' 0 0})
+$hosted.Child=$uiButton
+$a.Controls.Add($hosted)
 $a.Add_MouseWheel({param($sender,$e) Log-Input 'wheel' $e.Delta 0; $label.Text='Wheel: '+$e.Delta})
 $script:drag = New-Object Windows.Forms.Panel
 $drag.BackColor=[Drawing.Color]::FromArgb(237,159,22)
@@ -66,7 +74,11 @@ $script:stats = Join-Path $Lab 'samples.csv'
 function Sample-Frame {
   $t=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
   $tag='baseline'
-  try { $tag=[IO.File]::ReadAllText((Join-Path $Lab 'phase.txt')).Trim() } catch {}
+  try { $stream = [IO.File]::Open((Join-Path $Lab 'phase.txt'),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite)
+    try {
+      $reader=New-Object IO.StreamReader($stream)
+      try { $tag=$reader.ReadToEnd().Trim() } finally { $reader.Dispose() }
+    } finally { $stream.Dispose() } } catch {}
   if (!$tag) { $tag=$script:prevTag }
   if (!$tag) { $tag='baseline' }
   $script:prevTag=$tag

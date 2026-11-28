@@ -58,7 +58,11 @@ $script:stats = Join-Path $Lab 'samples.csv'
 function Sample-Frame {
   $t=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
   $tag='baseline'
-  try { $tag=[IO.File]::ReadAllText((Join-Path $Lab 'phase.txt')).Trim() } catch {}
+  try { $stream = [IO.File]::Open((Join-Path $Lab 'phase.txt'),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite)
+    try {
+      $reader=New-Object IO.StreamReader($stream)
+      try { $tag=$reader.ReadToEnd().Trim() } finally { $reader.Dispose() }
+    } finally { $stream.Dispose() } } catch {}
   if (!$tag) { $tag=$script:prevTag }
   if (!$tag) { $tag='baseline' }
   $script:prevTag=$tag

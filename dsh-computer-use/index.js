@@ -84,7 +84,9 @@ const OVERLAY_SCRIPT = new URL('./tools/overlay.ps1', import.meta.url);
 const OVERLAY_STATE = join(tmpdir(), 'dsh-cua-overlay-state.json');
 const OVERLAY_PID = join(tmpdir(), 'dsh-cua-overlay.pid');
 const OVERLAY_READY = join(tmpdir(), 'dsh-cua-overlay.ready');
-const OVERLAY_STARTUP_MS = 4500;
+// A cold WPF dispatcher can take >4.5s on a loaded Windows desktop. This is
+// only process readiness; pointer input still requires its own paint receipt.
+const OVERLAY_STARTUP_MS = 8500;
 const OVERLAY_TTL_MS = 90000;
 const OVERLAY_LINGER_MS = 700;
 const DOTNET_UNIX_EPOCH_TICKS = 621355968000000000n;
@@ -124,7 +126,7 @@ function ensureOverlay() {
     const deadline = Date.now() + OVERLAY_STARTUP_MS;
     try {
       const { engine } = await import('./tools/engine.mjs');
-      await engine({ action: 'overlay', Script: fileURLToPath(OVERLAY_SCRIPT) }, { timeoutMs: 2500 });
+      await engine({ action: 'overlay', Script: fileURLToPath(OVERLAY_SCRIPT) }, { timeoutMs: 3500 });
     } catch (error) {
       console.warn('[dsh-computer-use] overlay start failed:', String(error && error.message || error).slice(0, 160));
     }

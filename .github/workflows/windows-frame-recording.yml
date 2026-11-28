@@ -156,6 +156,16 @@ jobs:
           $env:TMP=$sandboxTmp
           $env:WFR_LAB=$lab
           $variant=${{ matrix.window }}
+          if (!(Get-Command ffmpeg.exe -ErrorAction SilentlyContinue)) {
+            $pack = Join-Path $lab 'ffmpeg.tgz'
+            Invoke-WebRequest -UseBasicParsing -Uri 'https://registry.npmjs.org/@ffmpeg-installer/win32-x64/-/win32-x64-4.1.0.tgz' -OutFile $pack -TimeoutSec 45
+            $want = 'Drt5u2vzDnIONf4ZEkKtFlbvwj6rI3kxw1Ck9fpudmtgaZIHD4ucsWB2lCZBXRxJgXR+2IMSti+4rtM4C4rXgg=='
+            $got = [Convert]::ToBase64String([Security.Cryptography.SHA512]::Create().ComputeHash([IO.File]::ReadAllBytes($pack)))
+            if ($got -ne $want) { throw 'unexpected FFmpeg checksum' }
+            & tar.exe -xzf $pack -C $lab package/ffmpeg.exe
+            if ($LASTEXITCODE -ne 0) { throw 'could not unpack FFmpeg' }
+            $env:PATH = (Join-Path $lab 'package')+';'+$env:PATH
+          }
           $fixture=Join-Path $env:GITHUB_WORKSPACE 'docs/qa/cua-matrix-fixture.ps1'
           $runner=Join-Path $env:GITHUB_WORKSPACE 'docs/qa/cua-matrix.mjs'
           $fixtureProcess=Start-Process powershell.exe -ArgumentList @('-NoProfile','-STA','-WindowStyle','Hidden','-File',('"' + $fixture + '"'),('"' + $lab + '"'),$variant) -PassThru
