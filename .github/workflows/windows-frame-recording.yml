@@ -2,7 +2,11 @@ name: Windows Computer Use frame recording
 on:
   push:
     branches: ['qa/windows-frame-recording-2026-11-27', 'qa/plugin-reliability-2026-11-26', 'qa/computer-use-action-receipts-2026-11-28']
-    paths: ['.github/workflows/windows-frame-recording.yml', 'dsh-computer-use/tools/cua.ps1']
+    paths:
+      - '.github/workflows/windows-frame-recording.yml'
+      - 'dsh-computer-use/**'
+      - 'docs/qa/overlay-timing-*.mjs'
+      - 'docs/qa/overlay-timing-*.ps1'
 permissions: {}
 jobs:
   frame-recording:
@@ -27,6 +31,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
+          [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
           if (-not [Environment]::UserInteractive -or (Get-Process -Id $PID).SessionId -eq 0) { throw 'No interactive Windows desktop' }
           $lab = (New-Item -ItemType Directory (Join-Path $env:RUNNER_TEMP 'window-frame-proof')).FullName
           $sandboxTmp=(New-Item -ItemType Directory (Join-Path $lab 'native-temp')).FullName

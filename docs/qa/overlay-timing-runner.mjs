@@ -52,6 +52,11 @@ if(good){
 // Exercise movement outside the plugin so geometry, not its in-memory
 // invalidation, is what refuses the original frame.
 async function proveFrameReceipt() {
+ // The previous scenario intentionally pressed Escape. Acknowledge the one
+ // stop notice as a new test phase before any fresh observation or input.
+ const stopped=await reg.find(t=>t.name==='computer_windows').execute({});
+ assert.equal(stopped.ok,false,stopped.text);
+ assert.match(stopped.text,/^STOPPED:/);
  const {engine}=await import(pathToFileURL(join(root,'dsh-computer-use/tools/engine.mjs')).href);
  const screenshot=async label=>{
   const r=await call('shot',{x:80,y:55,width:110,height:55,path:path(label+'.png')});
