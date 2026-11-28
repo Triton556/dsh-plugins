@@ -49,6 +49,9 @@ param(
   [string]$Script,
   [ValidatePattern('^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$')][string]$StopToken,
   [long]$DeadlineMs,
+  [switch]$FrameReceipt,
+  [ValidatePattern('^[A-F0-9]{64}$')][string]$ExpectedFrame,
+  [switch]$PointerReceipt,
   [switch]$Overlay
 )
 
@@ -275,8 +278,48 @@ function Wait-ActionDelay([int]$milliseconds) {
   Assert-ActionActive
 }
 
+function Get-FrameFingerprint([IntPtr]$handle, $bounds = $null) {
+  if ($handle -eq [IntPtr]::Zero -or [Cua.Native]::IsIconic($handle) -or
+      -not [Cua.Native]::IsWindowVisible($handle)) { return $null }
+  $rect = if ($null -ne $bounds) { $bounds } else {
+    $r = New-Object Cua.Native+RECT
+    if (-not [Cua.Native]::GetWindowRect($handle, [ref]$r)) { return $null }
+    $r
+  }
+  [uint32]$owner = 0
+  $thread = [Cua.Native]::GetWindowThreadProcessId($handle, [ref]$owner)
+  if (-not $thread -or -not $owner) { return $null }
+  $title = New-Object Text.StringBuilder 4096
+  [void][Cua.Native]::GetWindowText($handle, $title, $title.Capacity)
+  try {
+    $born = (Get-Process -Id $owner -ErrorAction Stop).StartTime.ToUniversalTime().Ticks
+    $effective = Get-TargetDpi $handle
+    $fields = @($handle.ToInt64(), $owner, $thread, $born, $rect.Left, $rect.Top, $rect.Right, $rect.Bottom, $effective.Dpi, $effective.Awareness, $title.ToString())
+    $hash = [Security.Cryptography.SHA256]::Create()
+    try { return [BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes(($fields -join '|')))).Replace('-','') }
+    finally { $hash.Dispose() }
+  } catch { return $null }
+}
+
+function Assert-FrameCurrent([IntPtr]$handle) {
+  if (-not $ExpectedFrame) { return }
+  if ($Client -or (Get-FrameFingerprint $handle) -cne $ExpectedFrame) {
+    throw 'STALE_FRAME: window identity, title or geometry changed or is unavailable. Take a new screenshot.'
+  }
+}
+
+function Write-FrameReceipt([IntPtr]$handle, [string]$fingerprint, [int]$left, [int]$top, [int]$width, [int]$height) {
+  if ($FrameReceipt -and $fingerprint -and (Get-FrameFingerprint $handle) -ceq $fingerprint) {
+    Write-Output "[cua-frame] $left $top $width $height $fingerprint"
+  }
+}
+
 function Invoke-MousePress([uint32]$down, [uint32]$up, [scriptblock]$body) {
   Assert-ActionActive
+  if ($PointerReceipt) {
+    [Console]::Out.WriteLine('[cua-pointer] dispatching')
+    [Console]::Out.Flush()
+  }
   [void][Cua.Native]::mouse_event($down, 0, 0, 0, [UIntPtr]::Zero)
   try { & $body }
   finally { [void][Cua.Native]::mouse_event($up, 0, 0, 0, [UIntPtr]::Zero) }
@@ -339,11 +382,14 @@ function New-ShotGraphics($bitmap) {
   return [System.Drawing.Graphics]::FromImage($bitmap)
 }
 
-function Capture-ShotBitmap([System.IntPtr]$h, [string]$method) {
+function Capture-ShotBitmap([System.IntPtr]$h, [string]$method, [ref]$fingerprint) {
   $window = $h -ne [System.IntPtr]::Zero
   if ($window) {
     $r = New-Object Cua.Native+RECT
     if (-not [Cua.Native]::GetWindowRect($h, [ref]$r)) { throw 'CAPTURE_FAILED: could not read window bounds.' }
+    if ($null -ne $fingerprint -and $FrameReceipt) {
+      $fingerprint.Value = Get-FrameFingerprint $h $r
+    }
     $left = $r.Left; $top = $r.Top
     $w = $r.Right - $r.Left; $hh = $r.Bottom - $r.Top
   } else {
@@ -381,10 +427,13 @@ function Shot([string]$target, [System.IntPtr]$h) {
     $target = New-CapturePath $dir 'shot' '.png'
   }
   $dir = Split-Path -Parent $target; if ($dir) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
-  $bmp = Capture-ShotBitmap $h $Method
-  try { $bmp.Save($target, [System.Drawing.Imaging.ImageFormat]::Png) }
-  finally { $bmp.Dispose() }
-  Write-Output $target
+  $fingerprint = $null
+  $bmp = Capture-ShotBitmap $h $Method ([ref]$fingerprint)
+  try {
+    $bmp.Save($target, [System.Drawing.Imaging.ImageFormat]::Png)
+    Write-Output $target
+    if ($FrameReceipt -and $fingerprint) { Write-FrameReceipt $h $fingerprint 0 0 $bmp.Width $bmp.Height }
+  } finally { $bmp.Dispose() }
 }
 
 function Send-UnicodeText([string]$value, [System.IntPtr]$handle) {
@@ -476,7 +525,8 @@ function Shot-Region([string]$target, [System.IntPtr]$h, [int]$rx, [int]$ry, [in
   if ($rw -le 0 -or $rh -le 0) { throw 'region needs positive width and height' }
   $dir = Split-Path -Parent $target; if ($dir) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
   # Crop the same backend as a full screenshot.
-  $full = Capture-ShotBitmap $h $Method
+  $fingerprint = $null
+  $full = Capture-ShotBitmap $h $Method ([ref]$fingerprint)
   try {
     $x = [Math]::Max(0, [Math]::Min($rx, $full.Width - 1))
     $y = [Math]::Max(0, [Math]::Min($ry, $full.Height - 1))
@@ -486,8 +536,9 @@ function Shot-Region([string]$target, [System.IntPtr]$h, [int]$rx, [int]$ry, [in
     $crop = $full.Clone($rect, $full.PixelFormat)
     try { $crop.Save($target, [System.Drawing.Imaging.ImageFormat]::Png) }
     finally { $crop.Dispose() }
+    Write-Output $target
+    if ($FrameReceipt -and $fingerprint) { Write-FrameReceipt $h $fingerprint $x $y $cw $ch }
   } finally { $full.Dispose() }
-  return $target
 }
 function Convert-Ocr([string]$imagePath) {
   # WinRT file APIs need a normalised absolute Windows path; callers may pass
@@ -654,6 +705,7 @@ function Assert-Target([System.IntPtr]$handle) {
 }
 # 'wait' keeps its lazy resolution (it polls for a window that may appear later).
 if ($explicitTarget -and $h -eq [System.IntPtr]::Zero -and $Action -notin @('wait')) {
+  Assert-FrameCurrent $h
   Assert-Target $h
 }
 # Publish the same absolute point used by the real input, not a second
@@ -880,13 +932,17 @@ switch ($Action) {
     "sent combo $Text"
   }
   'click' {
+    Assert-FrameCurrent $h
     Focus-Window $h
     Assert-Foreground $h
+    Assert-FrameCurrent $h
     $pt = Convert-Point $h $X $Y
     Assert-PointerTarget $h $pt.X $pt.Y
     Write-OverlayGeometry $h $pt
     Wait-PointerIndicator $h
+    Assert-FrameCurrent $h
     Move-To $pt.X $pt.Y
+    Assert-FrameCurrent $h
     Assert-PointerTarget $h $pt.X $pt.Y
     $down = if ($Right) { [Cua.Native]::RBUTTONDOWN } else { [Cua.Native]::LBUTTONDOWN }
     $up = if ($Right) { [Cua.Native]::RBUTTONUP } else { [Cua.Native]::LBUTTONUP }
@@ -899,15 +955,19 @@ switch ($Action) {
     "clicked $($pt.X),$($pt.Y)"
   }
   'drag' {
+    Assert-FrameCurrent $h
     Focus-Window $h
     Assert-Foreground $h
+    Assert-FrameCurrent $h
     $a = Convert-Point $h $X $Y
     $b = Convert-Point $h $X2 $Y2
     Assert-PointerTarget $h $a.X $a.Y
     Assert-PointerTarget $h $b.X $b.Y
     Write-OverlayGeometry $h $a
     Wait-PointerIndicator $h
+    Assert-FrameCurrent $h
     Move-To $a.X $a.Y
+    Assert-FrameCurrent $h
     Assert-PointerTarget $h $a.X $a.Y
     Invoke-MousePress ([Cua.Native]::LBUTTONDOWN) ([Cua.Native]::LBUTTONUP) {
       Wait-ActionDelay 60

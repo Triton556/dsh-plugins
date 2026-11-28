@@ -1,6 +1,6 @@
 // Run with an isolated TMPDIR; never use the user's running indicator.
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { registerHooks } from 'node:module';
@@ -29,6 +29,9 @@ apply(ctx);
 await Promise.all(starts);
 const statePath = join(tmpdir(), 'dsh-cua-overlay-state.json');
 const state = () => JSON.parse(readFileSync(statePath, 'utf8'));
+const build = BigInt(Math.floor(statSync(new URL('./overlay.ps1', import.meta.url)).mtimeMs)) * 10000n + 621355968000000000n;
+for (const name of ['pid', 'ready']) writeFileSync(join(tmpdir(), 'dsh-cua-overlay.' + name), String(process.pid));
+writeFileSync(join(tmpdir(), 'dsh-cua-overlay.build'), String(build));
 const marker = '[overlay] hwnd=122 rect=-1200,40,-500,690 click=-1100,56';
 let calls = 0;
 globalThis.dshTestEngine = async (opts, hooks) => {
@@ -40,25 +43,25 @@ globalThis.dshTestEngine = async (opts, hooks) => {
     hooks.onLine(marker);
     assert.deepEqual(state().cursor, { x: -1100, y: 56 }, 'while dispatching, overlay uses the actual absolute input point');
     assert.equal(state().target.hwnd, 122);
-    return { ok: true, text: marker + '\nclicked -1100,56' };
+    return { ok: true, text: marker + '\n[cua-pointer] dispatching\nclicked -1100,56' };
   }
   if (opts.Action === 'click' && !opts.Window) {
     assert.equal(state().screen, true, 'desktop warning is present during desktop input');
-    return { ok: true, text: 'clicked 30,40' };
+    return { ok: true, text: '[cua-pointer] dispatching\nclicked 30,40' };
   }
-  return { ok: false, text: 'TARGET_NOT_FOREGROUND' };
+  return { ok: false, text: 'TARGET_NOT_FOREGROUND: wrong window' };
 };
 const click = tools.get('computer_click');
-assert.match((await click.execute({ x: 30, y: 40 })).text, /^REFUSED/);
+assert.match((await click.execute({ x: 30, y: 40 })).text, /\nREFUSED:/);
 assert.equal(calls, 0);
 assert.equal((await click.execute({ x: 30, y: 40, user_ready: true })).ok, true);
 assert.equal(state().ttlMs, 0, 'warning hides after whole-screen input');
-assert.deepEqual(await click.execute({ window: 'Fixture', x: 100, y: 16 }), { ok: true, text: 'clicked -1100,56' });
+assert.deepEqual(await click.execute({ window: 'Fixture', x: 100, y: 16 }), { ok: true, text: 'Computer Use · Click · Fixture · Foreground\nInput sent. App response not verified.\nclicked -1100,56' });
 assert.equal(state().ttlMs, 700, 'target highlight has a short completion linger');
 assert.equal((await click.execute({ window: 'Wrong', x: 100, y: 16 })).ok, false);
 assert.equal(state().ttlMs, 0, 'failure never lingers as success');
 writeFileSync(join(tmpdir(), 'dsh-cua-stop.json'), JSON.stringify({ at: Date.now() }));
-assert.match((await click.execute({ x: 30, y: 40, user_ready: true })).text, /^STOPPED/);
+assert.match((await click.execute({ x: 30, y: 40, user_ready: true })).text, /\nSTOPPED:/);
 assert.equal(calls, 3);
 console.log('PASS: consent, geometry streaming, target isolation, linger, error, STOP');
 
@@ -90,13 +93,13 @@ assert.ok(active.stopToken);
 writeFileSync(join(tmpdir(), 'dsh-cua-stop.json'), JSON.stringify({ at: Date.now() }));
 assert.equal((await tools.get('computer_windows').execute({})).ok, true);
 assert.deepEqual(state(), active, 'window list cannot redraw or clear the active drag');
-assert.match((await click.execute({ window: 'Fixture', x: 10, y: 20 })).text, /^BUSY/);
+assert.match((await click.execute({ window: 'Fixture', x: 10, y: 20 })).text, /\nBUSY:/);
 assert.equal(competingCalls, 0, 'overlapping input cannot reach the worker');
 assert.deepEqual(state(), active, 'competing input must not replace the Escape token');
 releaseDrag();
 await moving;
 assert.equal(state().ttlMs, 0);
-assert.match((await click.execute({ window: 'Fixture', x: 10, y: 20 })).text, /^STOPPED/,
+assert.match((await click.execute({ window: 'Fixture', x: 10, y: 20 })).text, /\nSTOPPED:/,
   'the next idle call reports Escape, which the observer did not consume');
 
 globalThis.dshTestEngine = async (opts, hooks) => {
@@ -141,3 +144,30 @@ assert.equal((await shot.execute({ window: 'Fixture' })).ok, true);
 assert.equal((await shot.execute({ window: 'Fixture', width: 40, height: 25 })).ok, true);
 assert.equal(shotCalls, 2);
 console.log('PASS: malformed crops are refused before capture; full and valid crops still dispatch');
+
+const frame = 'A'.repeat(64);
+let inputCalls = 0;
+globalThis.dshTestEngine = async (opts, hooks) => {
+  if (opts.Action === 'shot') {
+    assert.equal(opts.FrameReceipt, true);
+    return { ok: true, text: join(tmpdir(), 'proof.png') + '\n[cua-frame] 10 20 80 90 ' + frame };
+  }
+  inputCalls++;
+  assert.equal(opts.ExpectedFrame, frame);
+  assert.equal(opts.PointerReceipt, true);
+  hooks.onLine(marker);
+  return { ok: true, text: marker + '\n[cua-pointer] dispatching\nclicked -1100,56' };
+};
+const view = await shot.execute({ window: 'Fixture', x: 10, y: 20, width: 80, height: 90 });
+const frame_id = view.text.match(/Frame ID: (\S+)/)?.[1];
+assert.ok(frame_id);
+assert.doesNotMatch(view.text, /\[cua-frame\]|AAAAA/);
+assert.match((await click.execute({ window:'Other', x: 55, y: 50, frame_id })).text, /FRAME_TARGET_MISMATCH/);
+assert.match((await click.execute({ window:'Fixture', x: 90, y: 50, frame_id })).text, /POINT_OUTSIDE_FRAME/);
+assert.equal(inputCalls, 0);
+const receipt = await click.execute({ window:'Fixture', x: 55, y: 50, frame_id });
+assert.equal(receipt.ok, true);
+assert.match(click.output.render({},receipt)[0].text, /Input sent. App response not verified/);
+assert.match((await click.execute({ window:'Fixture', x: 55, y: 50, frame_id })).text, /STALE_FRAME/);
+assert.equal(inputCalls, 1);
+console.log('PASS: registered shot -> crop receipt -> guarded click -> tool result; mismatched, out-of-crop and reused targets never reach the worker');

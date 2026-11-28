@@ -1,7 +1,7 @@
 name: Windows Computer Use frame recording
 on:
   push:
-    branches: ['qa/windows-frame-recording-2026-11-27', 'qa/plugin-reliability-2026-11-26']
+    branches: ['qa/windows-frame-recording-2026-11-27', 'qa/plugin-reliability-2026-11-26', 'qa/computer-use-action-receipts-2026-11-28']
     paths: ['.github/workflows/windows-frame-recording.yml', 'dsh-computer-use/tools/cua.ps1']
 permissions: {}
 jobs:
@@ -19,6 +19,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'git fetch failed' }
           git checkout --detach FETCH_HEAD
           if ($LASTEXITCODE -ne 0 -or (git rev-parse HEAD) -ne $env:GITHUB_SHA) { throw 'wrong checkout' }
+          node --test dsh-computer-use/tools/frame-receipt.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Frame receipt contracts failed' }
           pwsh -NoProfile -File dsh-computer-use/tools/input-contract.ps1
           if ($LASTEXITCODE -ne 0) { throw 'Pointer indicator contracts failed' }
       - name: Record production wrapper, native engine and WPF timing
@@ -31,6 +33,7 @@ jobs:
           $env:TEMP=$sandboxTmp
           $env:TMP=$sandboxTmp
           $env:WFR_LAB=$lab
+          $env:WFR_TEST_RECEIPTS='1'
           $fixture=Join-Path $env:GITHUB_WORKSPACE 'docs/qa/overlay-timing-fixture.ps1'
           $runner=Join-Path $env:GITHUB_WORKSPACE 'docs/qa/overlay-timing-runner.mjs'
           $fixtureProcess=Start-Process powershell.exe -ArgumentList @('-NoProfile','-STA','-WindowStyle','Hidden','-File',('"' + $fixture + '"'),('"' + $lab + '"')) -PassThru
@@ -71,4 +74,6 @@ jobs:
             ${{ runner.temp }}/window-frame-proof/input.csv
             ${{ runner.temp }}/window-frame-proof/samples.csv
             ${{ runner.temp }}/window-frame-proof/actions.json
+            ${{ runner.temp }}/window-frame-proof/before-move.png
+            ${{ runner.temp }}/window-frame-proof/after-move.png
           retention-days: 14

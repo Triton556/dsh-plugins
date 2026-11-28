@@ -2,6 +2,7 @@ import { registerHooks } from 'node:module';
 import {writeFileSync,readFileSync,existsSync} from 'node:fs';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
+import assert from 'node:assert/strict';
 const root=process.env.GITHUB_WORKSPACE, lab=process.env.WFR_LAB;
 const path=(name)=>join(lab,name);
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -47,6 +48,48 @@ if(good){
  await sleep(180);
  const after=readFileSync(path('input.csv'),'utf8');
  output.push({label:'missing-paint',start,end:Date.now(),elapsedMs,unchangedInputLog:before===after,...result});
+}
+// Exercise movement outside the plugin so geometry, not its in-memory
+// invalidation, is what refuses the original frame.
+async function proveFrameReceipt() {
+ const {engine}=await import(pathToFileURL(join(root,'dsh-computer-use/tools/engine.mjs')).href);
+ const screenshot=async label=>{
+  const r=await call('shot',{x:80,y:55,width:110,height:55,path:path(label+'.png')});
+  assert.equal(r.ok,true,r.text);
+  assert.match(r.text,/Source crop.*110, 55/);
+  return r.text.match(/Frame ID: (\S+)/)?.[1];
+ };
+ phase('stale-after-move');
+ const old=await screenshot('before-move');
+ assert.ok(old,'Windows PrintWindow must return a frame ID');
+ const move=await engine({Action:'window',Window:window,Op:'move',X:96,Y:100});
+ assert.equal(move.ok,true,move.text);
+ const before=readFileSync(path('input.csv'),'utf8');
+ const rejected=await call('click',{x:95,y:69,frame_id:old});
+ assert.equal(rejected.ok,false,rejected.text);
+ assert.match(rejected.text,/STALE_FRAME: window identity/);
+ assert.match(rejected.text,/No pointer input sent/);
+ await sleep(180);
+ assert.equal(readFileSync(path('input.csv'),'utf8'),before,'stale frame must produce zero native input');
+ output.push({label:'stale-after-move',...rejected});
+ phase('fresh-after-move');
+ const fresh=await screenshot('after-move');
+ assert.ok(fresh && fresh!==old);
+ const one=await call('click',{x:95,y:69,frame_id:fresh});
+ assert.equal(one.ok,true,one.text);
+ assert.match(one.text,/Input sent. App response not verified/);
+ await sleep(180);
+ const events=readFileSync(path('input.csv'),'utf8').slice(before.length);
+ assert.deepEqual(events.trim().split(/\r?\n/).map(line=>line.split(',')[1]),['click-down','click-up']);
+ const reuse=await call('click',{x:95,y:69,frame_id:fresh});
+ assert.equal(reuse.ok,false);
+ assert.match(reuse.text,/STALE_FRAME: unknown, consumed or expired/);
+ assert.equal(readFileSync(path('input.csv'),'utf8'),before+events);
+ output.push({label:'fresh-after-move',...one},{label:'reuse',...reuse});
+ console.log('PASS: moved-window frame staled natively; fresh window crop clicked once; reusing ID produced no input');
+}
+if(good && output[4]?.unchangedInputLog && process.env.WFR_TEST_RECEIPTS==='1'){
+ try { await proveFrameReceipt(); } catch(e) { output.push({label:'frame receipt assertions',error:String(e.stack||e)}); console.error(e); process.exitCode=1; }
 }
 phase('complete');writeFileSync(path('actions.json'),JSON.stringify(output,null,2));
 if(!good||output[4]?.ok||!/OVERLAY_NOT_READY/.test(output[4]?.text||'')||!output[4]?.unchangedInputLog)process.exitCode=1;

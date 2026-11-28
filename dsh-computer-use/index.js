@@ -8,6 +8,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { extname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { createFrameStore, guardedPointer, pointerLine, pointerReceipt, readCapture } from './tools/frame-receipt.mjs';
 
 export const inject = [];
 
@@ -296,6 +297,9 @@ const CUA_PROMPT = [
   '- If the user presses ESC, the worker stops at its next safe cancellation point and the',
   '  next call reports STOPPED once. Ask the user how to continue - there is no',
   '  lockout, and user_ready is only needed again for whole-screen input.',
+  '- For clicks or drags based on a window screenshot, use its frame_id and exact window/pid.',
+  '  STALE_FRAME means take a new screenshot; never retry against the old image.',
+  '  Input sent does not prove the app changed. Check the result before repeating.',
   '- Never fight the user for the cursor: if they take over, stop and ask.',
   '- Give input tools a short `intent` (1-3 ENGLISH words: "open settings", "send message"): it is',
   '  what the on-screen caption shows next to the cursor. Write captions, labels and tool text in',
@@ -329,6 +333,7 @@ export const TOOLS = [
     name: 'computer_click',
     description: 'Click at a point. With "window" given, coordinates are window-relative and the window is focused first; otherwise they are screen coordinates.',
     parameters: {
+      frame_id: { type: 'string', description: 'Single-use ID from the window screenshot used to choose these window-relative coordinates.' },
       intent: { type: 'string', description: 'One to three ENGLISH words of intent for the on-screen caption, e.g. "open settings", "send message". Never use another language: captions are English-only.' },
       user_ready: { type: 'boolean', description: 'Set true only after the user agreed to let the agent drive the whole screen (not needed when window/pid is given)' },
       window: { type: 'string' },
@@ -344,6 +349,7 @@ export const TOOLS = [
     name: 'computer_drag',
     description: 'Press, move and release between two points (coordinates are window-relative when "window" is given).',
     parameters: {
+      frame_id: { type: 'string', description: 'Single-use ID from the window screenshot used to choose these window-relative coordinates.' },
       intent: { type: 'string', description: 'One to three ENGLISH words of intent for the on-screen caption, e.g. "open settings", "send message". Never use another language: captions are English-only.' },
       user_ready: { type: 'boolean', description: 'Set true only after the user agreed to let the agent drive the whole screen (not needed when window/pid is given)' },
       window: { type: 'string' },
@@ -546,6 +552,7 @@ export function apply(ctx, config = {}) {
 
   ctx.inject(['tools'], (toolCtx) => {
     const disposers = [];
+    const frames = createFrameStore();
     toolCtx.effect(() => {
       const tools = typeof toolCtx.get === 'function' ? toolCtx.get('tools') : null;
       if (!tools || typeof tools.register !== 'function') {
@@ -583,6 +590,11 @@ export function apply(ctx, config = {}) {
               }
             },
             execute: async (args) => {
+              const pointer = guardedPointer(spec.name);
+              const refusal = text => {
+                const result = { ok: false, text };
+                return pointer ? pointerReceipt(spec.name, args, result, 'not-sent') : result;
+              };
               if (spec.name === 'computer_shot' &&
                   [args.x, args.y, args.width, args.height].some(value => value !== undefined) &&
                   (!Number.isInteger(args.width) || args.width <= 0 ||
@@ -597,24 +609,28 @@ export function apply(ctx, config = {}) {
               const changesDesktop = DESKTOP_MUTATIONS.has(spec.name) ||
                 (spec.name === 'computer_clipboard' && typeof args.text === 'string' && args.text.length > 0);
               if (changesDesktop && activeInputToken) {
-                return { ok: false, text: 'BUSY: a desktop action is already running. Wait for it to finish before issuing another input.' };
+                return refusal('BUSY: a desktop action is already running. Wait for it to finish before issuing another input.');
               }
               // A concurrent observer must not consume the active action’s
               // stop notice. When idle, report it even with user_ready set.
               if (!activeInputToken && stopRequested()) {
-                return {
-                  ok: false,
-                  text: 'STOPPED: the user pressed ESC and cancellation was requested for the running action. Check with the user before continuing (retry with user_ready: true only after they agree).'
-                };
+                frames.clear();
+                return refusal('STOPPED: the user pressed ESC and cancellation was requested for the running action. Check with the user before continuing (retry with user_ready: true only after they agree).');
               }
               if (screenWide && !consent) {
-                return {
-                  ok: false,
-                  text: 'REFUSED: this acts on the whole screen. Ask the user to confirm (the on-screen banner "DeepSeek using your computer" shows while you work) and retry with user_ready: true. For a single app, pass window or pid instead - that needs no confirmation.'
-                };
+                return refusal('REFUSED: this acts on the whole screen. Ask the user to confirm and retry with user_ready: true.');
+              }
+
+              let frame;
+              if (pointer && args.frame_id !== undefined) {
+                const opened = frames.take(args, spec.name);
+                if (opened.error) return refusal(opened.error);
+                frame = opened.frame;
               }
 
               // Do not carry a previous target or desktop banner into a new call.
+              // A prior view no longer describes the desktop after another mutation.
+              if (changesDesktop) frames.clear();
               const point = Number.isFinite(args.x) && Number.isFinite(args.y) ? `${args.x},${args.y}` : '';
               const caption = captionFor(spec.name, args);
               const stopToken = CUA_OVERLAY && changesDesktop ? randomUUID() : undefined;
@@ -626,6 +642,10 @@ export function apply(ctx, config = {}) {
                 const name = key === 'depth' ? 'Delta' : key.charAt(0).toUpperCase() + key.slice(1);
                 engineArgs[name] = value;
               }
+              if (frame) engineArgs.ExpectedFrame = frame.fingerprint;
+              if (pointer) engineArgs.PointerReceipt = true;
+              const framedShot = spec.name === 'computer_shot' && args.method !== 'screen' && !!(args.window || args.pid);
+              if (framedShot) engineArgs.FrameReceipt = true;
               engineArgs.Overlay = !!stopToken;
               engineArgs.StopToken = stopToken;
               let result;
@@ -635,7 +655,7 @@ export function apply(ctx, config = {}) {
                   pushOverlay(0, '', screenWide ? point : '', screenWide ? caption : '', screenWide ? 'screen' : 'window', OVERLAY_TTL_MS, stopToken);
                   const ready = await ensureOverlay();
                   if (!ready && (spec.name === 'computer_click' || spec.name === 'computer_drag')) {
-                    return { ok: false, text: 'OVERLAY_NOT_READY: the indicator did not start; no click or drag was sent.' };
+                    return refusal('OVERLAY_NOT_READY: the indicator did not start.');
                   }
                 }
                 result = await engine(engineArgs, {
@@ -660,10 +680,17 @@ export function apply(ctx, config = {}) {
                   activeInputToken = undefined;
                 }
               }
+              if (pointer) {
+                const output = String(result?.text || '');
+                const dispatched = output.split(/\r?\n/).includes(pointerLine);
+                const definitelyRefused = /(?:STALE_FRAME:|TARGET_NOT_FOREGROUND:|TARGET_POINT_BLOCKED:|OVERLAY_NOT_READY:)/.test(output);
+                return pointerReceipt(spec.name, args, result, dispatched ? 'started' : definitelyRefused ? 'not-sent' : 'unknown');
+              }
               try {
                 if (result && result.ok && (spec.name === 'computer_shot' || spec.name === 'computer_video')) {
+                  const capture = framedShot ? readCapture(String(result.text || '')) : null;
                   const produced = spec.name === 'computer_shot'
-                    ? String(result.text || '').trim()
+                    ? capture?.path ?? String(result.text || '').trim()
                     : ((String(result.text || '').match(/^video: (.+\.(?:mp4|gif)) \(\d+(?:[.,]\d+)? KB, \d+ frames @ \d+ fps, (?:mp4|gif)\)$/im) || [])[1] || '');
                   // An mp4 cannot be shown inline, so attach its poster frame; a gif
                   // (animated) is attached as-is, like a screenshot.
@@ -671,7 +698,11 @@ export function apply(ctx, config = {}) {
                     ? produced.replace(/\.mp4$/i, '.png')
                     : produced;
                   const image = await attachImage(toolCtx, mediaPath);
-                  if (image) return { ok: true, text: result.text, image };
+                  const text = capture ? capture.path + '\n' + frames.issue(capture, args, image)
+                    : framedShot ? result.text + '\nNo frame ID: target state could not be verified. Retake the window screenshot before using its coordinates.'
+                    : result.text;
+                  if (image) return { ok: true, text, image };
+                  if (framedShot) return { ok: true, text };
                 }
               } catch (error) {}
               return result;
@@ -684,7 +715,7 @@ export function apply(ctx, config = {}) {
           appendFileSync(`${tmpdir()}/dsh-computer-use.log`, `${new Date().toISOString()} pid=${process.pid} registered ${TOOLS.length} tools\n`);
         } catch (error) {}
         console.info(`[dsh-computer-use] registered ${TOOLS.length} tools`);
-        return () => { for (const dispose of disposers.splice(0).reverse()) { try { dispose(); } catch {} } };
+        return () => { frames.clear(); for (const dispose of disposers.splice(0).reverse()) { try { dispose(); } catch {} } };
       }).catch((error) => {
         console.warn('[dsh-computer-use] tool registration failed:', String(error && error.message || error).slice(0, 300));
       });
@@ -692,6 +723,6 @@ export function apply(ctx, config = {}) {
 
     // Disposal is owned by the injection: cordis releases the tools when the
     // scope goes away.
-    return () => { for (const dispose of disposers.reverse()) { try { dispose(); } catch (error) {} } };
+    return () => { frames.clear(); for (const dispose of disposers.reverse()) { try { dispose(); } catch (error) {} } };
   });
 }
